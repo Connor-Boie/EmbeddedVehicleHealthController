@@ -9,8 +9,8 @@ commands, and transmits telemetry.
 
 ## Project Status
 
-Initial board bring-up, C++ application integration, and GPIO output
-abstraction are complete.
+Initial board bring-up, C++ application integration, GPIO output control,
+and debounced user-button input are complete.
 
 Current capabilities include:
 
@@ -20,12 +20,14 @@ Current capabilities include:
 - A user-owned C++ application layer
 - A C-compatible bridge between generated C code and C++ code
 - A reusable C++ digital-output abstraction
-- Onboard LD2 status LED control
-- Debug inspection of C++ object state
+- Polled onboard user-button input
+- Hardware-independent software debouncing
+- One-time pressed and released button events
+- Onboard status LED control from confirmed button presses
+- Debug inspection of nested C++ object state
 
-The current LED blink verifies the hardware, toolchain, mixed C/C++ build,
-and GPIO abstraction. Blocking timing will later be replaced with
-non-blocking application timing.
+Each confirmed press of the onboard USER button toggles LD2 once. Holding
+the button does not repeatedly toggle the LED.
 
 ## Target Hardware
 
@@ -56,21 +58,21 @@ The project uses a mixed C/C++ build:
 
 ## Current Behavior
 
-After the firmware starts:
+After firmware startup:
 
 1. The STM32 HAL is initialized.
 2. The system clock is configured.
 3. Generated GPIO and board-support initialization runs.
 4. Generated C code initializes the C++ application through a C-compatible
    bridge.
-5. The C++ application initializes its status LED abstraction.
-6. The main loop repeatedly calls the C++ application.
-7. The application toggles the onboard status LED.
-8. A C++ member variable records the number of LED toggles.
-9. The firmware waits approximately 500 milliseconds between toggles.
-
-The current implementation intentionally uses `HAL_Delay()` while the
-application architecture is established.
+5. The application initializes the status LED and button debouncer.
+6. The main loop repeatedly samples the user button.
+7. Raw button readings are passed to the software debouncer.
+8. A state change is accepted only after remaining stable for 30
+   milliseconds.
+9. A confirmed button press generates one pressed event.
+10. Each pressed event toggles the onboard LD2 status LED.
+11. A C++ member variable records the number of confirmed button presses.
 
 ## Software Architecture
 
@@ -87,8 +89,7 @@ App/Inc/Application.hpp
 App/Src/Application.cpp
 ```
 
-A C-compatible bridge connects the generated C entry point to the C++
-application:
+A C-compatible bridge connects generated C code to the C++ application:
 
 ```text
 App/Inc/application_bridge.h
@@ -102,6 +103,13 @@ App/Inc/DigitalOutput.hpp
 App/Src/DigitalOutput.cpp
 ```
 
+Hardware-independent button debouncing is implemented in:
+
+```text
+App/Inc/ButtonDebouncer.hpp
+App/Src/ButtonDebouncer.cpp
+```
+
 The current execution flow is:
 
 ```text
@@ -113,8 +121,11 @@ application_init()
     v
 Application::initialize()
     |
-    v
-DigitalOutput::turnOff()
+    +--> DigitalOutput::turnOff()
+    |
+    +--> Read initial button state
+    |
+    +--> ButtonDebouncer::initialize()
 
 main.c infinite loop
     |
@@ -124,11 +135,13 @@ application_run()
     v
 Application::run()
     |
-    v
-DigitalOutput::toggle()
+    +--> Read raw button state
     |
-    v
-STM32 HAL GPIO function
+    +--> ButtonDebouncer::update()
+    |
+    +--> Check pressedEvent()
+    |
+    +--> DigitalOutput::toggle()
 ```
 
 ## Repository Structure
@@ -138,10 +151,12 @@ EmbeddedVehicleHealthController/
 ├── App/
 │   ├── Inc/
 │   │   ├── Application.hpp
+│   │   ├── ButtonDebouncer.hpp
 │   │   ├── DigitalOutput.hpp
 │   │   └── application_bridge.h
 │   └── Src/
 │       ├── Application.cpp
+│       ├── ButtonDebouncer.cpp
 │       ├── DigitalOutput.cpp
 │       └── application_bridge.cpp
 ├── Core/
@@ -169,7 +184,7 @@ It stores:
 - A pointer to the STM32 GPIO port
 - The GPIO pin mask
 
-It provides these operations:
+It provides:
 
 ```cpp
 void turnOn();
@@ -179,22 +194,56 @@ void set(bool enabled);
 ```
 
 The `Application` class owns a `DigitalOutput` representing the onboard
-status LED:
+status LED.
 
-```cpp
-DigitalOutput statusLed_;
+## Button Debouncing
+
+Physical button contacts can rapidly alternate between pressed and released
+when they first make or break contact.
+
+`ButtonDebouncer` separates:
+
+- Raw sampled state
+- Confirmed stable state
+- Pressed transition events
+- Released transition events
+
+The raw state must remain stable for the configured debounce period before
+the confirmed state changes.
+
+The current debounce period is:
+
+```text
+30 milliseconds
 ```
 
-This is composition: the application has a digital output that it uses as
-its status LED.
+A pressed event is generated once when the confirmed state changes from
+released to pressed. Holding the button does not generate repeated pressed
+events.
 
-The application no longer directly calls STM32 GPIO functions. It requests
-operations from the digital-output abstraction instead.
+## State and Event Semantics
+
+The debouncer provides both state and events:
+
+```cpp
+bool isPressed() const;
+bool pressedEvent() const;
+bool releasedEvent() const;
+```
+
+`isPressed()` describes the current confirmed state.
+
+`pressedEvent()` and `releasedEvent()` describe transitions that occurred
+during the latest update.
+
+This allows the application to toggle the status LED once for each confirmed
+button press.
 
 ## C and C++ Integration
 
 STM32CubeMX generates the firmware entry point and hardware initialization in
-C. The main application and hardware abstractions are implemented in C++.
+C. The main application and reusable software components are implemented in
+C++.
 
 The bridge functions use C-compatible linkage:
 
@@ -203,8 +252,8 @@ extern "C" void application_init(void);
 extern "C" void application_run(void);
 ```
 
-This prevents C++ name mangling from preventing the generated C entry point
-from linking to functions implemented in C++.
+This prevents C++ name mangling from preventing generated C code from linking
+to functions implemented in C++.
 
 ## Build and Run
 
@@ -219,20 +268,33 @@ from linking to functions implemented in C++.
 8. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
 9. Start a debug session or run the firmware.
 10. Resume execution if the debugger pauses at `main()`.
-11. Verify that LD2 toggles approximately every 500 milliseconds.
+11. Verify that LD2 starts off.
+12. Press the onboard USER button and confirm that LD2 toggles once.
+13. Hold the button and confirm that LD2 does not repeatedly toggle.
+14. Press the button repeatedly and confirm one toggle per press.
 
 ## Debugging
 
-To inspect the application:
+To inspect button processing:
 
 1. Set a breakpoint on `statusLed_.toggle()` in `Application.cpp`.
 2. Start a debug session.
 3. Resume execution.
-4. Expand `this` in the Variables view.
-5. Inspect `statusLed_` and `blinkCount_`.
-6. Step into `DigitalOutput::toggle()`.
-7. Inspect the output object's `port_` and `pin_` members.
-8. Resume repeatedly and verify that `blinkCount_` increases.
+4. Press the onboard USER button.
+5. Inspect `this->buttonPressCount_`.
+6. Expand `this->buttonDebouncer_`.
+7. Inspect the raw and confirmed button states.
+8. Resume and verify that the counter increases once per press.
+
+Useful members include:
+
+```text
+rawPressed_
+confirmedPressed_
+pressedEvent_
+releasedEvent_
+lastRawChangeTimeMs_
+```
 
 ## Generated-Code Policy
 
@@ -259,12 +321,14 @@ moved or edited.
 - Keep the generated firmware entry point small.
 - Implement application behavior in user-owned C++ classes.
 - Encapsulate repeated hardware operations behind focused abstractions.
+- Separate raw hardware input from confirmed application state.
+- Represent one-time transitions as events.
+- Keep hardware-independent algorithms testable without the board.
 - Prefer composition over inheritance for application components.
 - Prefer fixed-size and statically allocated resources.
 - Avoid runtime dynamic allocation where practical.
 - Keep interrupt handlers short.
 - Prefer non-blocking timing for normal application behavior.
-- Separate hardware-dependent code from testable system logic.
 - Add abstractions only when they improve clarity or testability.
 - Validate communication input before processing commands.
 
@@ -272,8 +336,8 @@ moved or edited.
 
 The firmware will be expanded to include:
 
-- Button input and software debouncing
-- Non-blocking timing
+- Fully non-blocking application timing
+- Periodic task execution
 - Hardware timer interrupts
 - Cooperative task scheduling
 - UART telemetry and command handling
@@ -293,5 +357,6 @@ The firmware will be expanded to include:
 - Primary application language: Modern C++
 - Generated hardware-support language: C
 - Scheduling model: Cooperative
+- Input model: Polling with software debouncing
 - RTOS: Not currently used
 - Dynamic allocation: Avoided during normal firmware operation
