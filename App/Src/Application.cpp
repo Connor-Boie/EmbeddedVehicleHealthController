@@ -2,15 +2,20 @@
 
 #include "main.h"
 
+Application::Application()
+	: statusLed_{LD2_GPIO_Port, LD2_Pin}
+{
+}
+
 void Application::initialize()
 {
-    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+    statusLed_.turnOff();
     blinkCount_ = 0U;
 }
 
 void Application::run()
 {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    statusLed_.toggle();
     ++blinkCount_;
 
     HAL_Delay(500U);

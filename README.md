@@ -9,21 +9,23 @@ commands, and transmits telemetry.
 
 ## Project Status
 
-The initial board bring-up and C++ application integration are complete.
+Initial board bring-up, C++ application integration, and GPIO output
+abstraction are complete.
 
 Current capabilities include:
 
 - STM32F446RE hardware initialization generated through STM32CubeMX
 - Firmware builds and flashing through STM32CubeIDE
 - Onboard ST-LINK programming and debugging
+- A user-owned C++ application layer
+- A C-compatible bridge between generated C code and C++ code
+- A reusable C++ digital-output abstraction
 - Onboard LD2 status LED control
-- A user-owned C++ application class
-- A C-compatible bridge between generated C code and C++ application code
 - Debug inspection of C++ object state
 
-The current LED blink is a hardware, toolchain, and language-integration
-verification test. Blocking timing will later be replaced with non-blocking
-application timing.
+The current LED blink verifies the hardware, toolchain, mixed C/C++ build,
+and GPIO abstraction. Blocking timing will later be replaced with
+non-blocking application timing.
 
 ## Target Hardware
 
@@ -45,22 +47,30 @@ application timing.
 STM32CubeMX is used for hardware configuration and generated initialization
 code. STM32CubeIDE is used for editing, building, flashing, and debugging.
 
+The project uses a mixed C/C++ build:
+
+```text
+.c files   → compiled as C
+.cpp files → compiled as C++
+```
+
 ## Current Behavior
 
 After the firmware starts:
 
 1. The STM32 HAL is initialized.
 2. The system clock is configured.
-3. The onboard LED GPIO is initialized.
+3. Generated GPIO and board-support initialization runs.
 4. Generated C code initializes the C++ application through a C-compatible
    bridge.
-5. The main loop repeatedly calls the C++ application.
-6. The application toggles the onboard LED.
-7. A C++ member variable records the number of LED toggles.
-8. The firmware waits approximately 500 milliseconds between toggles.
+5. The C++ application initializes its status LED abstraction.
+6. The main loop repeatedly calls the C++ application.
+7. The application toggles the onboard status LED.
+8. A C++ member variable records the number of LED toggles.
+9. The firmware waits approximately 500 milliseconds between toggles.
 
 The current implementation intentionally uses `HAL_Delay()` while the
-application structure is established.
+application architecture is established.
 
 ## Software Architecture
 
@@ -77,11 +87,19 @@ App/Inc/Application.hpp
 App/Src/Application.cpp
 ```
 
-A C-compatible bridge connects the two layers:
+A C-compatible bridge connects the generated C entry point to the C++
+application:
 
 ```text
 App/Inc/application_bridge.h
 App/Src/application_bridge.cpp
+```
+
+GPIO output operations are isolated in:
+
+```text
+App/Inc/DigitalOutput.hpp
+App/Src/DigitalOutput.cpp
 ```
 
 The current execution flow is:
@@ -94,6 +112,9 @@ application_init()
     |
     v
 Application::initialize()
+    |
+    v
+DigitalOutput::turnOff()
 
 main.c infinite loop
     |
@@ -102,10 +123,13 @@ application_run()
     |
     v
 Application::run()
+    |
+    v
+DigitalOutput::toggle()
+    |
+    v
+STM32 HAL GPIO function
 ```
-
-This structure keeps STM32CubeMX-generated initialization separate from
-application behavior.
 
 ## Repository Structure
 
@@ -114,9 +138,11 @@ EmbeddedVehicleHealthController/
 ├── App/
 │   ├── Inc/
 │   │   ├── Application.hpp
+│   │   ├── DigitalOutput.hpp
 │   │   └── application_bridge.h
 │   └── Src/
 │       ├── Application.cpp
+│       ├── DigitalOutput.cpp
 │       └── application_bridge.cpp
 ├── Core/
 │   ├── Inc/
@@ -134,10 +160,41 @@ EmbeddedVehicleHealthController/
 Generated build and IDE metadata files may vary with installed STM32 tool
 versions.
 
+## GPIO Output Abstraction
+
+`DigitalOutput` represents a GPIO configured as a digital output.
+
+It stores:
+
+- A pointer to the STM32 GPIO port
+- The GPIO pin mask
+
+It provides these operations:
+
+```cpp
+void turnOn();
+void turnOff();
+void toggle();
+void set(bool enabled);
+```
+
+The `Application` class owns a `DigitalOutput` representing the onboard
+status LED:
+
+```cpp
+DigitalOutput statusLed_;
+```
+
+This is composition: the application has a digital output that it uses as
+its status LED.
+
+The application no longer directly calls STM32 GPIO functions. It requests
+operations from the digital-output abstraction instead.
+
 ## C and C++ Integration
 
 STM32CubeMX generates the firmware entry point and hardware initialization in
-C. The main application is implemented in C++.
+C. The main application and hardware abstractions are implemented in C++.
 
 The bridge functions use C-compatible linkage:
 
@@ -155,26 +212,27 @@ from linking to functions implemented in C++.
    configuration changes are required.
 2. Generate code for the STM32CubeIDE toolchain.
 3. Open the project in STM32CubeIDE.
-4. Verify that `App/Inc` is included in both the C and C++ compiler include
-   paths.
-5. Verify that `App/Src` is included in the build.
-6. Build the project.
-7. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
-8. Start a debug session or run the firmware.
-9. Resume execution if the debugger pauses at `main()`.
-10. Verify that LD2 toggles approximately every 500 milliseconds.
+4. Verify that the project is configured as a mixed C/C++ project.
+5. Verify that `App/Inc` is included in the C and C++ compiler include paths.
+6. Verify that `App/Src` is included in the build.
+7. Build the project.
+8. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
+9. Start a debug session or run the firmware.
+10. Resume execution if the debugger pauses at `main()`.
+11. Verify that LD2 toggles approximately every 500 milliseconds.
 
 ## Debugging
 
-To inspect the C++ application state:
+To inspect the application:
 
-1. Set a breakpoint on `++blinkCount_` in `Application.cpp`.
+1. Set a breakpoint on `statusLed_.toggle()` in `Application.cpp`.
 2. Start a debug session.
 3. Resume execution.
 4. Expand `this` in the Variables view.
-5. Inspect `blinkCount_`.
-6. Alternatively, add `this->blinkCount_` to the Expressions view.
-7. Resume repeatedly and verify that the value increases.
+5. Inspect `statusLed_` and `blinkCount_`.
+6. Step into `DigitalOutput::toggle()`.
+7. Inspect the output object's `port_` and `pin_` members.
+8. Resume repeatedly and verify that `blinkCount_` increases.
 
 ## Generated-Code Policy
 
@@ -192,11 +250,16 @@ sections marked with:
 Application behavior is placed in user-owned files under `App/` rather than
 directly in generated files.
 
+Generated initialization calls outside protected regions are not manually
+moved or edited.
+
 ## Design Principles
 
 - Keep generated hardware initialization separate from application logic.
 - Keep the generated firmware entry point small.
 - Implement application behavior in user-owned C++ classes.
+- Encapsulate repeated hardware operations behind focused abstractions.
+- Prefer composition over inheritance for application components.
 - Prefer fixed-size and statically allocated resources.
 - Avoid runtime dynamic allocation where practical.
 - Keep interrupt handlers short.
@@ -209,7 +272,6 @@ directly in generated files.
 
 The firmware will be expanded to include:
 
-- GPIO output abstraction
 - Button input and software debouncing
 - Non-blocking timing
 - Hardware timer interrupts
