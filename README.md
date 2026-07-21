@@ -9,17 +9,21 @@ commands, and transmits telemetry.
 
 ## Project Status
 
-Initial board bring-up is complete:
+The initial board bring-up and C++ application integration are complete.
 
-- Created the NUCLEO-F446RE firmware project.
-- Generated the initial STM32 hardware configuration.
-- Configured the onboard green user LED.
-- Built and flashed the firmware through the onboard ST-LINK debugger.
-- Verified the target using a blocking LED-blink test.
-- Used a breakpoint and watch expression to inspect firmware state.
+Current capabilities include:
 
-The current LED blink is a hardware and toolchain verification test.
-It will later be replaced with non-blocking application timing.
+- STM32F446RE hardware initialization generated through STM32CubeMX
+- Firmware builds and flashing through STM32CubeIDE
+- Onboard ST-LINK programming and debugging
+- Onboard LD2 status LED control
+- A user-owned C++ application class
+- A C-compatible bridge between generated C code and C++ application code
+- Debug inspection of C++ object state
+
+The current LED blink is a hardware, toolchain, and language-integration
+verification test. Blocking timing will later be replaced with non-blocking
+application timing.
 
 ## Target Hardware
 
@@ -48,51 +52,72 @@ After the firmware starts:
 1. The STM32 HAL is initialized.
 2. The system clock is configured.
 3. The onboard LED GPIO is initialized.
-4. The main loop toggles the onboard LED.
-5. The firmware waits approximately 500 milliseconds between toggles.
-6. A debug counter records how many toggles have occurred.
+4. Generated C code initializes the C++ application through a C-compatible
+   bridge.
+5. The main loop repeatedly calls the C++ application.
+6. The application toggles the onboard LED.
+7. A C++ member variable records the number of LED toggles.
+8. The firmware waits approximately 500 milliseconds between toggles.
 
-The current implementation intentionally uses `HAL_Delay()` because the
-firmware is currently limited to verifying the board and development
-toolchain.
+The current implementation intentionally uses `HAL_Delay()` while the
+application structure is established.
 
-## Planned Features
+## Software Architecture
 
-The firmware will be expanded to include:
+The generated STM32 entry point remains in C:
 
-- C++ application architecture
-- GPIO abstractions
-- Button input and software debouncing
-- Non-blocking timing
-- Hardware timer interrupts
-- Cooperative task scheduling
-- UART telemetry and command handling
-- Sensor interfaces
-- ADC and I2C sensor input
-- System operating modes
-- Fault detection and fault management
-- Watchdog recovery
-- CAN communication
-- Host-based unit tests
-- Static analysis and documentation
+```text
+Core/Src/main.c
+```
 
-## Initial Architecture
+User-owned application behavior is implemented in C++:
 
-The current project mainly consists of STM32-generated startup,
-initialization, and HAL support code.
+```text
+App/Inc/Application.hpp
+App/Src/Application.cpp
+```
 
-The firmware will be separated into:
+A C-compatible bridge connects the two layers:
 
-- Generated STM32 initialization code
-- User-owned C++ application code
-- Hardware interface classes
-- Testable system logic
-- Communication and protocol components
+```text
+App/Inc/application_bridge.h
+App/Src/application_bridge.cpp
+```
+
+The current execution flow is:
+
+```text
+main.c
+    |
+    v
+application_init()
+    |
+    v
+Application::initialize()
+
+main.c infinite loop
+    |
+    v
+application_run()
+    |
+    v
+Application::run()
+```
+
+This structure keeps STM32CubeMX-generated initialization separate from
+application behavior.
 
 ## Repository Structure
 
 ```text
 EmbeddedVehicleHealthController/
+├── App/
+│   ├── Inc/
+│   │   ├── Application.hpp
+│   │   └── application_bridge.h
+│   └── Src/
+│       ├── Application.cpp
+│       └── application_bridge.cpp
 ├── Core/
 │   ├── Inc/
 │   └── Src/
@@ -106,33 +131,50 @@ EmbeddedVehicleHealthController/
 └── README.md
 ```
 
-The exact generated build and IDE metadata files may vary with the installed
-STM32CubeMX and STM32CubeIDE versions.
+Generated build and IDE metadata files may vary with installed STM32 tool
+versions.
+
+## C and C++ Integration
+
+STM32CubeMX generates the firmware entry point and hardware initialization in
+C. The main application is implemented in C++.
+
+The bridge functions use C-compatible linkage:
+
+```cpp
+extern "C" void application_init(void);
+extern "C" void application_run(void);
+```
+
+This prevents C++ name mangling from preventing the generated C entry point
+from linking to functions implemented in C++.
 
 ## Build and Run
 
 1. Open `EmbeddedVehicleHealthController.ioc` in STM32CubeMX when hardware
    configuration changes are required.
 2. Generate code for the STM32CubeIDE toolchain.
-3. Open the generated project in STM32CubeIDE.
-4. Build the project.
-5. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
-6. Start a debug session or run the firmware.
-7. Resume execution if the debugger pauses at `main()`.
-8. Verify that the green user LED toggles approximately every 500
-   milliseconds.
+3. Open the project in STM32CubeIDE.
+4. Verify that `App/Inc` is included in both the C and C++ compiler include
+   paths.
+5. Verify that `App/Src` is included in the build.
+6. Build the project.
+7. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
+8. Start a debug session or run the firmware.
+9. Resume execution if the debugger pauses at `main()`.
+10. Verify that LD2 toggles approximately every 500 milliseconds.
 
 ## Debugging
 
-The current firmware includes a file-scope counter named `blinkCount`.
+To inspect the C++ application state:
 
-To inspect it:
-
-1. Set a breakpoint on `++blinkCount`.
+1. Set a breakpoint on `++blinkCount_` in `Application.cpp`.
 2. Start a debug session.
-3. Add `blinkCount` to the Expressions view.
-4. Resume execution repeatedly.
-5. Verify that the counter increases each time the breakpoint is reached.
+3. Resume execution.
+4. Expand `this` in the Variables view.
+5. Inspect `blinkCount_`.
+6. Alternatively, add `this->blinkCount_` to the Expressions view.
+7. Resume repeatedly and verify that the value increases.
 
 ## Generated-Code Policy
 
@@ -147,14 +189,14 @@ sections marked with:
 /* USER CODE END ... */
 ```
 
-Most application logic will be placed in user-owned C++ files rather than
+Application behavior is placed in user-owned files under `App/` rather than
 directly in generated files.
 
 ## Design Principles
 
-The project follows these principles:
-
 - Keep generated hardware initialization separate from application logic.
+- Keep the generated firmware entry point small.
+- Implement application behavior in user-owned C++ classes.
 - Prefer fixed-size and statically allocated resources.
 - Avoid runtime dynamic allocation where practical.
 - Keep interrupt handlers short.
@@ -162,6 +204,25 @@ The project follows these principles:
 - Separate hardware-dependent code from testable system logic.
 - Add abstractions only when they improve clarity or testability.
 - Validate communication input before processing commands.
+
+## Planned Features
+
+The firmware will be expanded to include:
+
+- GPIO output abstraction
+- Button input and software debouncing
+- Non-blocking timing
+- Hardware timer interrupts
+- Cooperative task scheduling
+- UART telemetry and command handling
+- Sensor interfaces
+- ADC and I2C sensor input
+- System operating modes
+- Fault detection and fault management
+- Watchdog recovery
+- CAN communication
+- Host-based unit tests
+- Static analysis and additional design documentation
 
 ## Project Type
 
