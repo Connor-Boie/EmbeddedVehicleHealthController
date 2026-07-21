@@ -1,0 +1,56 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+
+# CMake and generated build directories
+build/
+cmake-build-*/
+
+# Compiled firmware and intermediate files
+*.o
+*.obj
+*.d
+*.su
+*.cyclo
+*.elf
+*.axf
+*.hex
+*.bin
+*.map
+*.list
+*.lst
+
+# Static and shared libraries
+*.a
+*.lib
+*.so
+*.dll
+
+# Coverage and profiling output
+*.gcda
+*.gcno
+*.gcov
+
+# IDE-local metadata
+.metadata/
+.settings/language.settings.xml
+.settings/stm32cubeide.project.prefs
+
+# Debug launch configurations may contain machine-local paths
+*.launch
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary and backup files
+*~
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Logs
+*.log
