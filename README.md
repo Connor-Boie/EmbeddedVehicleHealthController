@@ -9,25 +9,29 @@ commands, and transmits telemetry.
 
 ## Project Status
 
-Initial board bring-up, C++ application integration, GPIO output control,
-and debounced user-button input are complete.
+Initial board bring-up, mixed C/C++ application integration, GPIO output
+control, debounced user-button input, and non-blocking periodic timing are
+complete.
 
 Current capabilities include:
 
 - STM32F446RE hardware initialization generated through STM32CubeMX
-- Firmware builds and flashing through STM32CubeIDE
+- Firmware builds, flashing, and debugging through STM32CubeIDE
 - Onboard ST-LINK programming and debugging
 - A user-owned C++ application layer
-- A C-compatible bridge between generated C code and C++ code
-- A reusable C++ digital-output abstraction
-- Polled onboard user-button input
-- Hardware-independent software debouncing
+- A C-compatible bridge between generated C and C++ application code
+- A reusable digital-output abstraction
+- Hardware-independent button-debouncing logic
 - One-time pressed and released button events
+- A reusable rollover-safe periodic timer
+- Non-blocking periodic button sampling
 - Onboard status LED control from confirmed button presses
-- Debug inspection of nested C++ object state
+- Debug inspection of nested C++ application state
 
 Each confirmed press of the onboard USER button toggles LD2 once. Holding
 the button does not repeatedly toggle the LED.
+
+The main application loop no longer uses `HAL_Delay()`.
 
 ## Target Hardware
 
@@ -65,14 +69,20 @@ After firmware startup:
 3. Generated GPIO and board-support initialization runs.
 4. Generated C code initializes the C++ application through a C-compatible
    bridge.
-5. The application initializes the status LED and button debouncer.
-6. The main loop repeatedly samples the user button.
-7. Raw button readings are passed to the software debouncer.
-8. A state change is accepted only after remaining stable for 30
-   milliseconds.
-9. A confirmed button press generates one pressed event.
-10. Each pressed event toggles the onboard LD2 status LED.
-11. A C++ member variable records the number of confirmed button presses.
+5. The application initializes the status LED, button debouncer, and
+   button-sampling timer.
+6. The generated main loop repeatedly calls `Application::run()`.
+7. The application checks whether the button-sampling task is due.
+8. When due, the firmware samples the onboard USER button.
+9. Raw button readings are passed to the software debouncer.
+10. A state change is accepted only after remaining stable for 30
+    milliseconds.
+11. A confirmed press generates one pressed event.
+12. Each pressed event toggles the onboard LD2 status LED.
+13. A C++ member variable records the number of confirmed button presses.
+
+The button is sampled every 5 milliseconds without blocking the main
+application loop.
 
 ## Software Architecture
 
@@ -110,6 +120,13 @@ App/Inc/ButtonDebouncer.hpp
 App/Src/ButtonDebouncer.cpp
 ```
 
+Reusable periodic timing is implemented in:
+
+```text
+App/Inc/PeriodicTimer.hpp
+App/Src/PeriodicTimer.cpp
+```
+
 The current execution flow is:
 
 ```text
@@ -123,9 +140,9 @@ Application::initialize()
     |
     +--> DigitalOutput::turnOff()
     |
-    +--> Read initial button state
-    |
     +--> ButtonDebouncer::initialize()
+    |
+    +--> PeriodicTimer::initialize()
 
 main.c infinite loop
     |
@@ -135,13 +152,24 @@ application_run()
     v
 Application::run()
     |
-    +--> Read raw button state
+    +--> Read current system tick
     |
-    +--> ButtonDebouncer::update()
-    |
-    +--> Check pressedEvent()
-    |
-    +--> DigitalOutput::toggle()
+    +--> PeriodicTimer::isDue()
+             |
+             +-- false → return immediately
+             |
+             +-- true
+                    |
+                    v
+              Application::processButton()
+                    |
+                    +--> Read raw button state
+                    |
+                    +--> ButtonDebouncer::update()
+                    |
+                    +--> Check pressedEvent()
+                    |
+                    +--> DigitalOutput::toggle()
 ```
 
 ## Repository Structure
@@ -153,11 +181,13 @@ EmbeddedVehicleHealthController/
 │   │   ├── Application.hpp
 │   │   ├── ButtonDebouncer.hpp
 │   │   ├── DigitalOutput.hpp
+│   │   ├── PeriodicTimer.hpp
 │   │   └── application_bridge.h
 │   └── Src/
 │       ├── Application.cpp
 │       ├── ButtonDebouncer.cpp
 │       ├── DigitalOutput.cpp
+│       ├── PeriodicTimer.cpp
 │       └── application_bridge.cpp
 ├── Core/
 │   ├── Inc/
@@ -174,6 +204,60 @@ EmbeddedVehicleHealthController/
 
 Generated build and IDE metadata files may vary with installed STM32 tool
 versions.
+
+## Non-Blocking Timing
+
+`PeriodicTimer` determines whether a configured amount of time has elapsed.
+
+It stores:
+
+- The configured period in milliseconds
+- The timestamp associated with the previous execution
+
+It provides:
+
+```cpp
+void initialize(std::uint32_t currentTimeMs);
+bool isDue(std::uint32_t currentTimeMs);
+```
+
+The timer uses unsigned subtraction:
+
+```cpp
+currentTimeMs - previousExecutionTimeMs_
+```
+
+This supports normal 32-bit millisecond-counter rollover.
+
+When the timer is not due, the application returns immediately rather than
+waiting.
+
+## Button Sampling and Debouncing
+
+The button-sampling period is:
+
+```text
+5 milliseconds
+```
+
+The debounce stability period is:
+
+```text
+30 milliseconds
+```
+
+The button is sampled frequently, but a new raw state must remain stable for
+the full debounce period before it becomes the confirmed application state.
+
+`ButtonDebouncer` separates:
+
+- Raw sampled state
+- Confirmed stable state
+- Pressed transition events
+- Released transition events
+
+A pressed event is generated once when the confirmed state changes from
+released to pressed.
 
 ## GPIO Output Abstraction
 
@@ -193,51 +277,23 @@ void toggle();
 void set(bool enabled);
 ```
 
-The `Application` class owns a `DigitalOutput` representing the onboard
-status LED.
+The application owns a `DigitalOutput` representing the onboard status LED.
 
-## Button Debouncing
+## Cooperative Execution
 
-Physical button contacts can rapidly alternate between pressed and released
-when they first make or break contact.
+The firmware currently uses one main execution loop.
 
-`ButtonDebouncer` separates:
+`Application::run()` checks which work is due and runs only that work.
 
-- Raw sampled state
-- Confirmed stable state
-- Pressed transition events
-- Released transition events
+Each scheduled operation is expected to:
 
-The raw state must remain stable for the configured debounce period before
-the confirmed state changes.
+- Avoid blocking
+- Complete quickly
+- Preserve required state between calls
+- Return control to the main loop
 
-The current debounce period is:
-
-```text
-30 milliseconds
-```
-
-A pressed event is generated once when the confirmed state changes from
-released to pressed. Holding the button does not generate repeated pressed
-events.
-
-## State and Event Semantics
-
-The debouncer provides both state and events:
-
-```cpp
-bool isPressed() const;
-bool pressedEvent() const;
-bool releasedEvent() const;
-```
-
-`isPressed()` describes the current confirmed state.
-
-`pressedEvent()` and `releasedEvent()` describe transitions that occurred
-during the latest update.
-
-This allows the application to toggle the status LED once for each confirmed
-button press.
+This provides a foundation for additional periodic activities such as
+sensor sampling, health checks, and telemetry transmission.
 
 ## C and C++ Integration
 
@@ -275,26 +331,26 @@ to functions implemented in C++.
 
 ## Debugging
 
+To inspect periodic timing:
+
+1. Set a breakpoint inside `PeriodicTimer::isDue()`.
+2. Inspect `periodMs_`, `previousExecutionTimeMs_`, `currentTimeMs`, and
+   `elapsedTimeMs`.
+3. Verify that the button timer has a period of 5 milliseconds.
+4. Verify that `isDue()` returns false before the period elapses.
+5. Verify that it returns true after the period elapses.
+
 To inspect button processing:
 
-1. Set a breakpoint on `statusLed_.toggle()` in `Application.cpp`.
+1. Set a breakpoint on `processButton(currentTimeMs)`.
 2. Start a debug session.
 3. Resume execution.
-4. Press the onboard USER button.
-5. Inspect `this->buttonPressCount_`.
-6. Expand `this->buttonDebouncer_`.
-7. Inspect the raw and confirmed button states.
-8. Resume and verify that the counter increases once per press.
+4. Inspect successive values of `currentTimeMs`.
+5. Remove timing-related breakpoints before testing normal button behavior.
+6. Press the USER button.
+7. Inspect `buttonPressCount_` and the nested debouncer state.
 
-Useful members include:
-
-```text
-rawPressed_
-confirmedPressed_
-pressedEvent_
-releasedEvent_
-lastRawChangeTimeMs_
-```
+Breakpoints pause the processor and can distort real-time behavior.
 
 ## Generated-Code Policy
 
@@ -320,6 +376,9 @@ moved or edited.
 - Keep generated hardware initialization separate from application logic.
 - Keep the generated firmware entry point small.
 - Implement application behavior in user-owned C++ classes.
+- Avoid blocking delays in the normal application loop.
+- Use rollover-safe unsigned time calculations.
+- Pass a consistent timestamp through related operations.
 - Encapsulate repeated hardware operations behind focused abstractions.
 - Separate raw hardware input from confirmed application state.
 - Represent one-time transitions as events.
@@ -328,7 +387,6 @@ moved or edited.
 - Prefer fixed-size and statically allocated resources.
 - Avoid runtime dynamic allocation where practical.
 - Keep interrupt handlers short.
-- Prefer non-blocking timing for normal application behavior.
 - Add abstractions only when they improve clarity or testability.
 - Validate communication input before processing commands.
 
@@ -336,10 +394,8 @@ moved or edited.
 
 The firmware will be expanded to include:
 
-- Fully non-blocking application timing
-- Periodic task execution
+- Multiple cooperative periodic tasks
 - Hardware timer interrupts
-- Cooperative task scheduling
 - UART telemetry and command handling
 - Sensor interfaces
 - ADC and I2C sensor input
@@ -357,6 +413,7 @@ The firmware will be expanded to include:
 - Primary application language: Modern C++
 - Generated hardware-support language: C
 - Scheduling model: Cooperative
-- Input model: Polling with software debouncing
+- Input model: Periodic polling with software debouncing
+- Timing model: Non-blocking, rollover-safe periodic timing
 - RTOS: Not currently used
 - Dynamic allocation: Avoided during normal firmware operation

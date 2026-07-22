@@ -3,6 +3,7 @@
 
 #include "ButtonDebouncer.hpp"
 #include "DigitalOutput.hpp"
+#include "PeriodicTimer.hpp"
 
 #include <cstdint>
 
@@ -17,10 +18,13 @@ public:
     [[nodiscard]] std::uint32_t buttonPressCount() const;
 
 private:
+    void processButton(std::uint32_t currentTimeMs);
+
     [[nodiscard]] bool readUserButtonPressed() const;
 
     DigitalOutput statusLed_;
     ButtonDebouncer buttonDebouncer_;
+    PeriodicTimer buttonSampleTimer_;
 
     std::uint32_t buttonPressCount_{0U};
 };
