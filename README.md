@@ -10,8 +10,8 @@ commands, and transmits telemetry.
 ## Project Status
 
 Initial board bring-up, mixed C/C++ application integration, GPIO output
-control, debounced user-button input, and non-blocking periodic timing are
-complete.
+control, debounced user-button input, non-blocking timing, and cooperative
+periodic task execution are complete.
 
 Current capabilities include:
 
@@ -24,14 +24,21 @@ Current capabilities include:
 - Hardware-independent button-debouncing logic
 - One-time pressed and released button events
 - A reusable rollover-safe periodic timer
-- Non-blocking periodic button sampling
-- Onboard status LED control from confirmed button presses
+- Multiple independent cooperative periodic tasks
+- A configurable status heartbeat
+- Lightweight task-liveness monitoring
 - Debug inspection of nested C++ application state
 
-Each confirmed press of the onboard USER button toggles LD2 once. Holding
-the button does not repeatedly toggle the LED.
+The application currently runs three periodic activities:
 
-The main application loop no longer uses `HAL_Delay()`.
+```text
+Button sampling task    every 5 ms
+Heartbeat task          every 500 ms
+Health-monitoring task  every 1000 ms
+```
+
+The USER button enables or disables the status heartbeat. The main
+application loop does not use blocking delays.
 
 ## Target Hardware
 
@@ -69,20 +76,65 @@ After firmware startup:
 3. Generated GPIO and board-support initialization runs.
 4. Generated C code initializes the C++ application through a C-compatible
    bridge.
-5. The application initializes the status LED, button debouncer, and
-   button-sampling timer.
+5. The application initializes its digital output, button debouncer, and
+   periodic timers.
 6. The generated main loop repeatedly calls `Application::run()`.
-7. The application checks whether the button-sampling task is due.
-8. When due, the firmware samples the onboard USER button.
-9. Raw button readings are passed to the software debouncer.
-10. A state change is accepted only after remaining stable for 30
-    milliseconds.
-11. A confirmed press generates one pressed event.
-12. Each pressed event toggles the onboard LD2 status LED.
-13. A C++ member variable records the number of confirmed button presses.
+7. The application checks each periodic timer.
+8. The button task samples and debounces the USER button every 5
+   milliseconds.
+9. The heartbeat task toggles LD2 every 500 milliseconds while enabled.
+10. The health task evaluates button-task liveness every 1000 milliseconds.
+11. Each confirmed USER-button press enables or disables the heartbeat.
+12. Disabling the heartbeat turns LD2 off.
+13. Re-enabling the heartbeat resumes periodic LED toggling.
 
-The button is sampled every 5 milliseconds without blocking the main
-application loop.
+## Cooperative Tasks
+
+### Button task
+
+Period:
+
+```text
+5 milliseconds
+```
+
+Responsibilities:
+
+- Read the raw USER-button state
+- Update the software debouncer
+- Generate confirmed button events
+- Toggle heartbeat enable state
+- Record button-task execution time
+- Count confirmed button presses
+
+### Heartbeat task
+
+Period:
+
+```text
+500 milliseconds
+```
+
+Responsibilities:
+
+- Check whether the heartbeat is enabled
+- Toggle the onboard status LED
+- Count heartbeat-task executions
+
+### Health-monitoring task
+
+Period:
+
+```text
+1000 milliseconds
+```
+
+Responsibilities:
+
+- Calculate the time since the button task last executed
+- Compare task age against a 50-millisecond timeout
+- Update the current application health state
+- Count health evaluations
 
 ## Software Architecture
 
@@ -138,11 +190,11 @@ application_init()
     v
 Application::initialize()
     |
-    +--> DigitalOutput::turnOff()
-    |
-    +--> ButtonDebouncer::initialize()
-    |
-    +--> PeriodicTimer::initialize()
+    +--> Initialize status LED
+    +--> Initialize button debouncer
+    +--> Initialize button timer
+    +--> Initialize heartbeat timer
+    +--> Initialize health timer
 
 main.c infinite loop
     |
@@ -152,24 +204,17 @@ application_run()
     v
 Application::run()
     |
-    +--> Read current system tick
+    +--> Button timer due?
+    |        |
+    |        +--> Application::processButton()
     |
-    +--> PeriodicTimer::isDue()
+    +--> Heartbeat timer due?
+    |        |
+    |        +--> Application::updateHeartbeat()
+    |
+    +--> Health timer due?
              |
-             +-- false → return immediately
-             |
-             +-- true
-                    |
-                    v
-              Application::processButton()
-                    |
-                    +--> Read raw button state
-                    |
-                    +--> ButtonDebouncer::update()
-                    |
-                    +--> Check pressedEvent()
-                    |
-                    +--> DigitalOutput::toggle()
+             +--> Application::performHealthCheck()
 ```
 
 ## Repository Structure
@@ -205,7 +250,7 @@ EmbeddedVehicleHealthController/
 Generated build and IDE metadata files may vary with installed STM32 tool
 versions.
 
-## Non-Blocking Timing
+## Periodic Timing
 
 `PeriodicTimer` determines whether a configured amount of time has elapsed.
 
@@ -229,10 +274,33 @@ currentTimeMs - previousExecutionTimeMs_
 
 This supports normal 32-bit millisecond-counter rollover.
 
-When the timer is not due, the application returns immediately rather than
-waiting.
+Each application task owns an independent timer period.
 
-## Button Sampling and Debouncing
+## Task Liveness Monitoring
+
+The button task records its latest execution time:
+
+```cpp
+lastButtonTaskTimeMs_ = currentTimeMs;
+```
+
+The health task calculates:
+
+```cpp
+currentTimeMs - lastButtonTaskTimeMs_
+```
+
+The application currently considers the task healthy when its age is no
+greater than:
+
+```text
+50 milliseconds
+```
+
+This establishes a basic software-supervision pattern that can later be
+extended to sensor, communication, and telemetry tasks.
+
+## Button Debouncing
 
 The button-sampling period is:
 
@@ -246,54 +314,53 @@ The debounce stability period is:
 30 milliseconds
 ```
 
-The button is sampled frequently, but a new raw state must remain stable for
-the full debounce period before it becomes the confirmed application state.
-
-`ButtonDebouncer` separates:
-
-- Raw sampled state
-- Confirmed stable state
-- Pressed transition events
-- Released transition events
+A raw state must remain stable for the full debounce period before it becomes
+the confirmed application state.
 
 A pressed event is generated once when the confirmed state changes from
 released to pressed.
 
-## GPIO Output Abstraction
+## Status Heartbeat
 
-`DigitalOutput` represents a GPIO configured as a digital output.
+The heartbeat period is:
 
-It stores:
-
-- A pointer to the STM32 GPIO port
-- The GPIO pin mask
-
-It provides:
-
-```cpp
-void turnOn();
-void turnOff();
-void toggle();
-void set(bool enabled);
+```text
+500 milliseconds
 ```
 
-The application owns a `DigitalOutput` representing the onboard status LED.
+While heartbeat operation is enabled, the status LED toggles every heartbeat
+period.
+
+A confirmed USER-button press reverses the heartbeat enable state:
+
+```text
+Enabled  → disabled
+Disabled → enabled
+```
+
+When disabled, the status LED is explicitly turned off.
 
 ## Cooperative Execution
 
-The firmware currently uses one main execution loop.
+The firmware currently uses one main execution context.
 
-`Application::run()` checks which work is due and runs only that work.
+`Application::run()` checks which tasks are due and executes them in this
+order:
 
-Each scheduled operation is expected to:
+```text
+1. Button task
+2. Heartbeat task
+3. Health task
+```
+
+Each task is expected to:
 
 - Avoid blocking
 - Complete quickly
 - Preserve required state between calls
 - Return control to the main loop
 
-This provides a foundation for additional periodic activities such as
-sensor sampling, health checks, and telemetry transmission.
+No RTOS is currently used.
 
 ## C and C++ Integration
 
@@ -324,33 +391,35 @@ to functions implemented in C++.
 8. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
 9. Start a debug session or run the firmware.
 10. Resume execution if the debugger pauses at `main()`.
-11. Verify that LD2 starts off.
-12. Press the onboard USER button and confirm that LD2 toggles once.
-13. Hold the button and confirm that LD2 does not repeatedly toggle.
-14. Press the button repeatedly and confirm one toggle per press.
+11. Verify that LD2 begins blinking.
+12. Press the USER button and verify that the heartbeat stops.
+13. Confirm that LD2 remains off while the heartbeat is disabled.
+14. Press the USER button again and verify that the heartbeat resumes.
+15. Hold the button and verify that only one state change occurs.
 
 ## Debugging
 
-To inspect periodic timing:
+Useful application values include:
 
-1. Set a breakpoint inside `PeriodicTimer::isDue()`.
-2. Inspect `periodMs_`, `previousExecutionTimeMs_`, `currentTimeMs`, and
-   `elapsedTimeMs`.
-3. Verify that the button timer has a period of 5 milliseconds.
-4. Verify that `isDue()` returns false before the period elapses.
-5. Verify that it returns true after the period elapses.
+```text
+buttonPressCount_
+heartbeatExecutionCount_
+healthCheckCount_
+lastButtonTaskTimeMs_
+heartbeatEnabled_
+systemHealthy_
+```
 
-To inspect button processing:
+To inspect cooperative task behavior:
 
-1. Set a breakpoint on `processButton(currentTimeMs)`.
+1. Set a breakpoint in `Application::performHealthCheck()`.
 2. Start a debug session.
-3. Resume execution.
-4. Inspect successive values of `currentTimeMs`.
-5. Remove timing-related breakpoints before testing normal button behavior.
-6. Press the USER button.
-7. Inspect `buttonPressCount_` and the nested debouncer state.
+3. Inspect the task counters and health state.
+4. Expand the three timer members.
+5. Verify their configured periods.
+6. Remove timing-related breakpoints before testing normal runtime behavior.
 
-Breakpoints pause the processor and can distort real-time behavior.
+Breakpoints pause the processor and may distort task timing.
 
 ## Generated-Code Policy
 
@@ -377,6 +446,9 @@ moved or edited.
 - Keep the generated firmware entry point small.
 - Implement application behavior in user-owned C++ classes.
 - Avoid blocking delays in the normal application loop.
+- Give independent periodic activities independent timers.
+- Keep cooperative tasks short and non-blocking.
+- Monitor whether important tasks continue to make progress.
 - Use rollover-safe unsigned time calculations.
 - Pass a consistent timestamp through related operations.
 - Encapsulate repeated hardware operations behind focused abstractions.
@@ -394,13 +466,14 @@ moved or edited.
 
 The firmware will be expanded to include:
 
-- Multiple cooperative periodic tasks
 - Hardware timer interrupts
-- UART telemetry and command handling
-- Sensor interfaces
-- ADC and I2C sensor input
+- UART telemetry output
+- UART command reception
+- Command parsing and validation
 - System operating modes
 - Fault detection and fault management
+- ADC sensor monitoring
+- I2C sensor input
 - Watchdog recovery
 - CAN communication
 - Host-based unit tests
@@ -414,6 +487,7 @@ The firmware will be expanded to include:
 - Generated hardware-support language: C
 - Scheduling model: Cooperative
 - Input model: Periodic polling with software debouncing
-- Timing model: Non-blocking, rollover-safe periodic timing
+- Timing model: Non-blocking rollover-safe periodic timing
+- Health model: Basic task-liveness monitoring
 - RTOS: Not currently used
 - Dynamic allocation: Avoided during normal firmware operation
