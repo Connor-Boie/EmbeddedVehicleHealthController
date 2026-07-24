@@ -3,42 +3,48 @@
 A bare-metal embedded C++ firmware project for the
 STMicroelectronics NUCLEO-F446RE development board.
 
-The project simulates a small vehicle subsystem controller that collects
-sensor data, tracks system state, detects and reports faults, receives
-commands, and transmits telemetry.
+The project simulates a vehicle subsystem controller that collects sensor
+data, tracks system state, detects and reports faults, receives commands,
+and transmits telemetry.
 
 ## Project Status
 
-Initial board bring-up, mixed C/C++ application integration, GPIO output
-control, debounced user-button input, non-blocking timing, and cooperative
-periodic task execution are complete.
+Board bring-up, mixed C/C++ integration, GPIO output control, debounced
+button input, cooperative scheduling, TIM7 hardware interrupts, health
+monitoring, and USART2 telemetry output are complete.
 
 Current capabilities include:
 
-- STM32F446RE hardware initialization generated through STM32CubeMX
-- Firmware builds, flashing, and debugging through STM32CubeIDE
-- Onboard ST-LINK programming and debugging
+- STM32F446RE initialization generated through STM32CubeMX
+- Mixed C and C++ firmware
 - A user-owned C++ application layer
-- A C-compatible bridge between generated C and C++ application code
+- C-compatible application and interrupt bridges
 - A reusable digital-output abstraction
-- Hardware-independent button-debouncing logic
-- One-time pressed and released button events
-- A reusable rollover-safe periodic timer
-- Multiple independent cooperative periodic tasks
+- Hardware-independent button debouncing
+- Rollover-safe periodic timing
+- Multiple cooperative periodic tasks
 - A configurable status heartbeat
-- Lightweight task-liveness monitoring
-- Debug inspection of nested C++ application state
+- TIM7 periodic hardware interrupts
+- Task and hardware-event liveness monitoring
+- Fixed-buffer USART2 telemetry formatting
+- Serial telemetry through the ST-LINK virtual COM port
+- Successful and failed telemetry transmission counters
+- No runtime dynamic allocation in application code
 
-The application currently runs three periodic activities:
+The application currently runs four cooperative periodic activities:
 
 ```text
 Button sampling task    every 5 ms
 Heartbeat task          every 500 ms
 Health-monitoring task  every 1000 ms
+Telemetry task          every 1000 ms
 ```
 
-The USER button enables or disables the status heartbeat. The main
-application loop does not use blocking delays.
+TIM7 independently generates an interrupt approximately every:
+
+```text
+100 milliseconds
+```
 
 ## Target Hardware
 
@@ -48,6 +54,10 @@ application loop does not use blocking delays.
 - Onboard debugger/programmer: ST-LINK
 - Onboard user LED: LD2 on PA5
 - Onboard user button: B1 on PC13
+- Hardware timer: TIM7
+- Telemetry interface: USART2
+- USART2 transmit pin: PA2
+- USART2 receive pin: PA3
 
 ## Development Tools
 
@@ -56,6 +66,7 @@ application loop does not use blocking delays.
 - STM32CubeF4 firmware package
 - Arm GNU toolchain
 - Git
+- Serial terminal software
 
 STM32CubeMX is used for hardware configuration and generated initialization
 code. STM32CubeIDE is used for editing, building, flashing, and debugging.
@@ -73,20 +84,246 @@ After firmware startup:
 
 1. The STM32 HAL is initialized.
 2. The system clock is configured.
-3. Generated GPIO and board-support initialization runs.
-4. Generated C code initializes the C++ application through a C-compatible
-   bridge.
-5. The application initializes its digital output, button debouncer, and
-   periodic timers.
-6. The generated main loop repeatedly calls `Application::run()`.
-7. The application checks each periodic timer.
-8. The button task samples and debounces the USER button every 5
-   milliseconds.
-9. The heartbeat task toggles LD2 every 500 milliseconds while enabled.
-10. The health task evaluates button-task liveness every 1000 milliseconds.
-11. Each confirmed USER-button press enables or disables the heartbeat.
-12. Disabling the heartbeat turns LD2 off.
-13. Re-enabling the heartbeat resumes periodic LED toggling.
+3. Generated GPIO, TIM7, USART2, and board-support initialization runs.
+4. PA5 is initialized as an output for LD2.
+5. PA2 and PA3 are initialized for USART2.
+6. The USER button is initialized through the board-support library.
+7. Generated C code initializes the C++ application through a bridge.
+8. The application initializes its components, timers, counters, and health
+   state.
+9. TIM7 is started with interrupt generation enabled.
+10. The main loop repeatedly calls `Application::run()`.
+11. The button task samples and debounces the USER button.
+12. The heartbeat task toggles LD2 while enabled.
+13. The health task evaluates button-task and TIM7 activity.
+14. TIM7 interrupts increment an interrupt-side counter.
+15. The main loop observes hardware-timer events.
+16. The telemetry task formats controller state into a fixed-size buffer.
+17. A structured status line is transmitted through USART2 once per second.
+18. The ST-LINK virtual COM port carries the USART2 data to the connected PC.
+
+## Telemetry Output
+
+USART2 is configured as:
+
+```text
+Mode:          Asynchronous
+Baud rate:     115200
+Word length:   8 bits
+Parity:        None
+Stop bits:     1
+Flow control:  None
+TX pin:        PA2
+RX pin:        PA3
+```
+
+The telemetry task runs every:
+
+```text
+1000 milliseconds
+```
+
+Example output:
+
+```text
+uptime_ms=5000 button_presses=2 heartbeat_enabled=1 healthy=1 timer_active=1 timer_irq_count=50
+```
+
+Fields include:
+
+```text
+uptime_ms
+    Milliseconds since HAL startup.
+
+button_presses
+    Number of confirmed USER-button presses.
+
+heartbeat_enabled
+    1 when heartbeat blinking is enabled, otherwise 0.
+
+healthy
+    1 when the monitored application conditions are healthy.
+
+timer_active
+    1 when TIM7 produced interrupts during the latest health interval.
+
+timer_irq_count
+    Total number of observed TIM7 interrupts.
+```
+
+Messages end with:
+
+```text
+\r\n
+```
+
+to support conventional serial-terminal line endings.
+
+## UART Telemetry Architecture
+
+Telemetry behavior is implemented in:
+
+```text
+App/Inc/UartTelemetry.hpp
+App/Src/UartTelemetry.cpp
+```
+
+The execution flow is:
+
+```text
+Application telemetry timer
+    |
+    v
+Application::sendTelemetry()
+    |
+    v
+UartTelemetry::sendStatus()
+    |
+    +--> Format into fixed-size buffer
+    |
+    +--> Validate formatted length
+    |
+    +--> HAL_UART_Transmit()
+    |
+    v
+USART2
+    |
+    v
+ST-LINK virtual COM port
+    |
+    v
+PC serial terminal
+```
+
+`UartTelemetry` uses an internal fixed-size character buffer:
+
+```cpp
+char buffer_[192]{};
+```
+
+No `std::string`, heap allocation, `new`, or `malloc` is required.
+
+The class tracks:
+
+```text
+messageCount_
+    Successful telemetry transmissions.
+
+failureCount_
+    Formatting or UART transmission failures.
+```
+
+## Blocking Transmission Tradeoff
+
+The current telemetry implementation uses:
+
+```cpp
+HAL_UART_Transmit()
+```
+
+This is a polling-mode operation.
+
+The call uses a bounded timeout of:
+
+```text
+50 milliseconds
+```
+
+The current message normally transmits faster than this timeout, but the
+cooperative main loop cannot run other tasks during the transmission.
+
+Future revisions may use interrupt-driven or DMA transmission with explicit
+buffer ownership and busy-state management.
+
+## Software Architecture
+
+The generated STM32 entry point remains in C:
+
+```text
+Core/Src/main.c
+```
+
+User-owned application behavior is implemented in:
+
+```text
+App/Inc/Application.hpp
+App/Src/Application.cpp
+```
+
+The C-compatible bridge is implemented in:
+
+```text
+App/Inc/application_bridge.h
+App/Src/application_bridge.cpp
+```
+
+Reusable components include:
+
+```text
+App/Inc/DigitalOutput.hpp
+App/Src/DigitalOutput.cpp
+
+App/Inc/ButtonDebouncer.hpp
+App/Src/ButtonDebouncer.cpp
+
+App/Inc/PeriodicTimer.hpp
+App/Src/PeriodicTimer.cpp
+
+App/Inc/UartTelemetry.hpp
+App/Src/UartTelemetry.cpp
+```
+
+## Repository Structure
+
+The diagram highlights the primary source, configuration, and documentation
+files. Generated build output and IDE metadata are omitted for clarity.
+
+```text
+EmbeddedVehicleHealthController/
+├── App/
+│   ├── Inc/
+│   │   ├── Application.hpp
+│   │   ├── ButtonDebouncer.hpp
+│   │   ├── DigitalOutput.hpp
+│   │   ├── PeriodicTimer.hpp
+│   │   ├── UartTelemetry.hpp
+│   │   └── application_bridge.h
+│   └── Src/
+│       ├── Application.cpp
+│       ├── ButtonDebouncer.cpp
+│       ├── DigitalOutput.cpp
+│       ├── PeriodicTimer.cpp
+│       ├── UartTelemetry.cpp
+│       └── application_bridge.cpp
+├── Core/
+│   ├── Inc/
+│   │   ├── main.h
+│   │   └── stm32f4xx_it.h
+│   └── Src/
+│       ├── main.c
+│       ├── stm32f4xx_hal_msp.c
+│       └── stm32f4xx_it.c
+├── Drivers/
+│   ├── CMSIS/
+│   └── STM32F4xx_HAL_Driver/
+├── EmbeddedVehicleHealthController.ioc
+├── STM32F446RETX_FLASH.ld
+├── STM32F446RETX_RAM.ld
+├── startup_stm32f446retx.s
+├── .gitignore
+└── README.md
+```
+
+The repository may also contain STM32CubeIDE metadata such as:
+
+```text
+.project
+.cproject
+.settings/
+.mxproject
+```
+
+These are omitted from the architecture diagram.
 
 ## Cooperative Tasks
 
@@ -101,9 +338,9 @@ Period:
 Responsibilities:
 
 - Read the raw USER-button state
-- Update the software debouncer
+- Update software debouncing
 - Generate confirmed button events
-- Toggle heartbeat enable state
+- Enable or disable heartbeat operation
 - Record button-task execution time
 - Count confirmed button presses
 
@@ -117,9 +354,9 @@ Period:
 
 Responsibilities:
 
-- Check whether the heartbeat is enabled
-- Toggle the onboard status LED
-- Count heartbeat-task executions
+- Check whether heartbeat operation is enabled
+- Toggle LD2
+- Count heartbeat executions
 
 ### Health-monitoring task
 
@@ -131,302 +368,177 @@ Period:
 
 Responsibilities:
 
-- Calculate the time since the button task last executed
-- Compare task age against a 50-millisecond timeout
-- Update the current application health state
+- Check button-task freshness
+- Check TIM7 interrupt activity
+- Update hardware-timer activity
+- Update overall system health
 - Count health evaluations
 
-## Software Architecture
+### Telemetry task
 
-The generated STM32 entry point remains in C:
+Period:
 
 ```text
-Core/Src/main.c
+1000 milliseconds
 ```
 
-User-owned application behavior is implemented in C++:
+Responsibilities:
+
+- Capture the current controller state
+- Format a bounded status message
+- Transmit the message through USART2
+- Record successful transmissions
+- Record formatting or transmission failures
+
+The health task executes before telemetry when both are due, allowing the
+telemetry message to report the latest health result.
+
+## TIM7 Hardware Interrupt
+
+TIM7 uses:
 
 ```text
-App/Inc/Application.hpp
-App/Src/Application.cpp
+APB1 timer clock      84 MHz
+Prescaler             8399
+Counter period        999
+Update period         approximately 100 ms
 ```
 
-A C-compatible bridge connects generated C code to the C++ application:
+The interrupt path is:
 
 ```text
-App/Inc/application_bridge.h
-App/Src/application_bridge.cpp
-```
-
-GPIO output operations are isolated in:
-
-```text
-App/Inc/DigitalOutput.hpp
-App/Src/DigitalOutput.cpp
-```
-
-Hardware-independent button debouncing is implemented in:
-
-```text
-App/Inc/ButtonDebouncer.hpp
-App/Src/ButtonDebouncer.cpp
-```
-
-Reusable periodic timing is implemented in:
-
-```text
-App/Inc/PeriodicTimer.hpp
-App/Src/PeriodicTimer.cpp
-```
-
-The current execution flow is:
-
-```text
-main.c
+TIM7 update event
     |
     v
-application_init()
+TIM7_IRQHandler()
     |
     v
-Application::initialize()
-    |
-    +--> Initialize status LED
-    +--> Initialize button debouncer
-    +--> Initialize button timer
-    +--> Initialize heartbeat timer
-    +--> Initialize health timer
-
-main.c infinite loop
+HAL_TIM_IRQHandler()
     |
     v
-application_run()
+HAL_TIM_PeriodElapsedCallback()
     |
     v
-Application::run()
+application_timer_interrupt()
     |
-    +--> Button timer due?
-    |        |
-    |        +--> Application::processButton()
-    |
-    +--> Heartbeat timer due?
-    |        |
-    |        +--> Application::updateHeartbeat()
-    |
-    +--> Health timer due?
-             |
-             +--> Application::performHealthCheck()
+    v
+Application::onTimerInterrupt()
 ```
 
-## Repository Structure
+Interrupt context only increments a counter. Larger operations remain in the
+main loop.
+
+## Generated-Code Source of Truth
+
+The `.ioc` file is the source of truth for hardware configuration.
+
+Hardware settings that must remain configured include:
 
 ```text
-EmbeddedVehicleHealthController/
-├── App/
-│   ├── Inc/
-│   │   ├── Application.hpp
-│   │   ├── ButtonDebouncer.hpp
-│   │   ├── DigitalOutput.hpp
-│   │   ├── PeriodicTimer.hpp
-│   │   └── application_bridge.h
-│   └── Src/
-│       ├── Application.cpp
-│       ├── ButtonDebouncer.cpp
-│       ├── DigitalOutput.cpp
-│       ├── PeriodicTimer.cpp
-│       └── application_bridge.cpp
-├── Core/
-│   ├── Inc/
-│   └── Src/
-├── Drivers/
-│   ├── CMSIS/
-│   └── STM32F4xx_HAL_Driver/
-├── EmbeddedVehicleHealthController.ioc
-├── STM32F446RETX_FLASH.ld
-├── startup_stm32f446retx.s
-├── .gitignore
-└── README.md
+PA5        GPIO_Output
+PA2        USART2_TX
+PA3        USART2_RX
+TIM7       Activated
+USART2     Asynchronous
+TIM7 IRQ   Enabled
 ```
 
-Generated build and IDE metadata files may vary with installed STM32 tool
-versions.
-
-## Periodic Timing
-
-`PeriodicTimer` determines whether a configured amount of time has elapsed.
-
-It stores:
-
-- The configured period in milliseconds
-- The timestamp associated with the previous execution
-
-It provides:
-
-```cpp
-void initialize(std::uint32_t currentTimeMs);
-bool isDue(std::uint32_t currentTimeMs);
-```
-
-The timer uses unsigned subtraction:
-
-```cpp
-currentTimeMs - previousExecutionTimeMs_
-```
-
-This supports normal 32-bit millisecond-counter rollover.
-
-Each application task owns an independent timer period.
-
-## Task Liveness Monitoring
-
-The button task records its latest execution time:
-
-```cpp
-lastButtonTaskTimeMs_ = currentTimeMs;
-```
-
-The health task calculates:
-
-```cpp
-currentTimeMs - lastButtonTaskTimeMs_
-```
-
-The application currently considers the task healthy when its age is no
-greater than:
-
-```text
-50 milliseconds
-```
-
-This establishes a basic software-supervision pattern that can later be
-extended to sensor, communication, and telemetry tasks.
-
-## Button Debouncing
-
-The button-sampling period is:
-
-```text
-5 milliseconds
-```
-
-The debounce stability period is:
-
-```text
-30 milliseconds
-```
-
-A raw state must remain stable for the full debounce period before it becomes
-the confirmed application state.
-
-A pressed event is generated once when the confirmed state changes from
-released to pressed.
-
-## Status Heartbeat
-
-The heartbeat period is:
-
-```text
-500 milliseconds
-```
-
-While heartbeat operation is enabled, the status LED toggles every heartbeat
-period.
-
-A confirmed USER-button press reverses the heartbeat enable state:
-
-```text
-Enabled  → disabled
-Disabled → enabled
-```
-
-When disabled, the status LED is explicitly turned off.
-
-## Cooperative Execution
-
-The firmware currently uses one main execution context.
-
-`Application::run()` checks which tasks are due and executes them in this
-order:
-
-```text
-1. Button task
-2. Heartbeat task
-3. Health task
-```
-
-Each task is expected to:
-
-- Avoid blocking
-- Complete quickly
-- Preserve required state between calls
-- Return control to the main loop
-
-No RTOS is currently used.
+Manual changes to generated hardware configuration may be removed during the
+next code-generation operation.
 
 ## C and C++ Integration
 
-STM32CubeMX generates the firmware entry point and hardware initialization in
-C. The main application and reusable software components are implemented in
-C++.
+STM32CubeMX generates hardware initialization and the firmware entry point in
+C.
+
+The application and reusable components are implemented in C++.
 
 The bridge functions use C-compatible linkage:
 
 ```cpp
 extern "C" void application_init(void);
 extern "C" void application_run(void);
+extern "C" void application_timer_interrupt(void);
 ```
 
-This prevents C++ name mangling from preventing generated C code from linking
-to functions implemented in C++.
+The C++ application accesses the generated C UART handle through a
+C-linkage declaration:
+
+```cpp
+extern "C"
+{
+extern UART_HandleTypeDef huart2;
+}
+```
+
+This declaration refers to the existing generated handle and does not create
+a second UART object.
 
 ## Build and Run
 
-1. Open `EmbeddedVehicleHealthController.ioc` in STM32CubeMX when hardware
-   configuration changes are required.
-2. Generate code for the STM32CubeIDE toolchain.
-3. Open the project in STM32CubeIDE.
-4. Verify that the project is configured as a mixed C/C++ project.
-5. Verify that `App/Inc` is included in the C and C++ compiler include paths.
-6. Verify that `App/Src` is included in the build.
-7. Build the project.
-8. Connect the NUCLEO-F446RE through the ST-LINK USB connector.
-9. Start a debug session or run the firmware.
-10. Resume execution if the debugger pauses at `main()`.
-11. Verify that LD2 begins blinking.
-12. Press the USER button and verify that the heartbeat stops.
-13. Confirm that LD2 remains off while the heartbeat is disabled.
-14. Press the USER button again and verify that the heartbeat resumes.
-15. Hold the button and verify that only one state change occurs.
+1. Open the `.ioc` file in STM32CubeMX.
+2. Confirm PA5 is configured as `GPIO_Output`.
+3. Confirm USART2 is configured as asynchronous.
+4. Confirm PA2 and PA3 are assigned to USART2.
+5. Confirm USART2 uses 115200 baud, 8 data bits, no parity, and one stop bit.
+6. Confirm TIM7 configuration remains intact.
+7. Generate code.
+8. Build the project in STM32CubeIDE.
+9. Connect the board through the ST-LINK USB connector.
+10. Find the ST-LINK virtual COM port in Windows Device Manager.
+11. Open that port in a serial terminal.
+12. Configure the terminal for 115200 8-N-1 with no flow control.
+13. Run the firmware.
+14. Confirm one telemetry line appears approximately every second.
+15. Press the USER button and confirm the reported button count and heartbeat
+    state change.
+16. Confirm `healthy` and `timer_active` normally remain `1`.
 
 ## Debugging
 
-Useful application values include:
+Useful telemetry values include:
 
 ```text
-buttonPressCount_
-heartbeatExecutionCount_
-healthCheckCount_
-lastButtonTaskTimeMs_
-heartbeatEnabled_
-systemHealthy_
+telemetry_.buffer_
+telemetry_.messageCount_
+telemetry_.failureCount_
 ```
 
-To inspect cooperative task behavior:
+Application-level accessors include:
 
-1. Set a breakpoint in `Application::performHealthCheck()`.
-2. Start a debug session.
-3. Inspect the task counters and health state.
-4. Expand the three timer members.
-5. Verify their configured periods.
-6. Remove timing-related breakpoints before testing normal runtime behavior.
+```cpp
+telemetryMessageCount()
+telemetryFailureCount()
+```
 
-Breakpoints pause the processor and may distort task timing.
+Set a breakpoint in:
+
+```cpp
+Application::sendTelemetry()
+```
+
+or:
+
+```cpp
+UartTelemetry::sendStatus()
+```
+
+Inspect:
+
+```text
+formattedLength
+buffer_
+transmitStatus
+messageCount_
+failureCount_
+```
+
+Remove timing-related breakpoints before judging normal periodic behavior.
 
 ## Generated-Code Policy
 
-STM32CubeMX-generated files may be regenerated.
-
 Manual changes to generated files must be placed only inside protected
-sections marked with:
+regions:
 
 ```c
 /* USER CODE BEGIN ... */
@@ -434,41 +546,36 @@ sections marked with:
 /* USER CODE END ... */
 ```
 
-Application behavior is placed in user-owned files under `App/` rather than
-directly in generated files.
+Application behavior belongs in user-owned files under `App/`.
 
-Generated initialization calls outside protected regions are not manually
-moved or edited.
+Hardware configuration changes belong in the `.ioc` file.
 
 ## Design Principles
 
 - Keep generated hardware initialization separate from application logic.
-- Keep the generated firmware entry point small.
+- Treat the `.ioc` file as the hardware-configuration source of truth.
+- Keep the generated entry point small.
 - Implement application behavior in user-owned C++ classes.
-- Avoid blocking delays in the normal application loop.
-- Give independent periodic activities independent timers.
-- Keep cooperative tasks short and non-blocking.
-- Monitor whether important tasks continue to make progress.
-- Use rollover-safe unsigned time calculations.
-- Pass a consistent timestamp through related operations.
-- Encapsulate repeated hardware operations behind focused abstractions.
-- Separate raw hardware input from confirmed application state.
-- Represent one-time transitions as events.
-- Keep hardware-independent algorithms testable without the board.
-- Prefer composition over inheritance for application components.
-- Prefer fixed-size and statically allocated resources.
-- Avoid runtime dynamic allocation where practical.
-- Keep interrupt handlers short.
-- Add abstractions only when they improve clarity or testability.
-- Validate communication input before processing commands.
+- Keep cooperative tasks short and bounded.
+- Avoid indefinite waits.
+- Use fixed-size buffers for embedded communication.
+- Validate formatted lengths before transmission.
+- Avoid runtime dynamic allocation.
+- Keep interrupt handlers minimal.
+- Process substantial asynchronous work in the main loop.
+- Monitor task and hardware-event liveness.
+- Use rollover-safe time calculations.
+- Separate raw hardware inputs from confirmed application state.
+- Represent one-time state transitions as events.
+- Prefer composition for application components.
+- Add abstractions when they improve ownership, clarity, or testability.
 
 ## Planned Features
 
 The firmware will be expanded to include:
 
-- Hardware timer interrupts
-- UART telemetry output
 - UART command reception
+- Interrupt-driven receive handling
 - Command parsing and validation
 - System operating modes
 - Fault detection and fault management
@@ -487,7 +594,12 @@ The firmware will be expanded to include:
 - Generated hardware-support language: C
 - Scheduling model: Cooperative
 - Input model: Periodic polling with software debouncing
-- Timing model: Non-blocking rollover-safe periodic timing
-- Health model: Basic task-liveness monitoring
+- Telemetry interface: USART2 through ST-LINK virtual COM
+- Telemetry format: Fixed-buffer structured text
+- UART transmit model: Bounded polling transmission
+- Timing model: Non-blocking periodic scheduling with bounded UART transmit
+- Interrupt model: Minimal ISR notification with main-loop processing
+- Hardware timer: TIM7 periodic update interrupt
+- Health model: Task and hardware-event liveness monitoring
 - RTOS: Not currently used
 - Dynamic allocation: Avoided during normal firmware operation

@@ -2,12 +2,18 @@
 
 #include "main.h"
 
+extern "C"
+{
+extern UART_HandleTypeDef huart2;
+}
+
 namespace
 {
 constexpr std::uint32_t ButtonDebouncePeriodMs = 30U;
 constexpr std::uint32_t ButtonSamplePeriodMs = 5U;
 constexpr std::uint32_t HeartbeatPeriodMs = 500U;
 constexpr std::uint32_t HealthCheckPeriodMs = 1000U;
+constexpr std::uint32_t TelemetryPeriodMs = 1000U;
 
 constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 }
@@ -15,9 +21,11 @@ constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 Application::Application()
     : statusLed_{LD2_GPIO_Port, LD2_Pin},
       buttonDebouncer_{ButtonDebouncePeriodMs},
+      telemetry_{&huart2},
       buttonSampleTimer_{ButtonSamplePeriodMs},
       heartbeatTimer_{HeartbeatPeriodMs},
-      healthCheckTimer_{HealthCheckPeriodMs}
+      healthCheckTimer_{HealthCheckPeriodMs},
+      telemetryTimer_{TelemetryPeriodMs}
 {
 }
 
@@ -47,6 +55,7 @@ void Application::initialize()
     buttonSampleTimer_.initialize(currentTimeMs);
     heartbeatTimer_.initialize(currentTimeMs);
     healthCheckTimer_.initialize(currentTimeMs);
+    telemetryTimer_.initialize(currentTimeMs);
 }
 
 void Application::run()
@@ -68,6 +77,11 @@ void Application::run()
     if (healthCheckTimer_.isDue(currentTimeMs))
     {
         performHealthCheck(currentTimeMs);
+    }
+
+    if (telemetryTimer_.isDue(currentTimeMs))
+    {
+        sendTelemetry(currentTimeMs);
     }
 }
 
@@ -99,6 +113,16 @@ std::uint32_t Application::timerInterruptCount() const
 std::uint32_t Application::processedTimerEventCount() const
 {
     return processedTimerEventCount_;
+}
+
+std::uint32_t Application::telemetryMessageCount() const
+{
+    return telemetry_.messageCount();
+}
+
+std::uint32_t Application::telemetryFailureCount() const
+{
+    return telemetry_.failureCount();
 }
 
 bool Application::heartbeatEnabled() const
@@ -184,6 +208,19 @@ void Application::processTimerEvents()
 
     processedTimerEventCount_ =
         observedInterruptCount;
+}
+
+void Application::sendTelemetry(std::uint32_t currentTimeMs)
+{
+    const bool sent = telemetry_.sendStatus(
+        currentTimeMs,
+        buttonPressCount_,
+        heartbeatEnabled_,
+        systemHealthy_,
+        hardwareTimerActive_,
+        timerInterruptCount_);
+
+    static_cast<void>(sent);
 }
 
 bool Application::readUserButtonPressed() const
