@@ -16,3 +16,8 @@ extern "C" void application_run(void)
 {
     application.run();
 }
+
+extern "C" void application_timer_interrupt(void)
+{
+    application.onTimerInterrupt();
+}

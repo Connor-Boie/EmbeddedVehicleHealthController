@@ -8,6 +8,7 @@ extern "C"
 
 void application_init(void);
 void application_run(void);
+void application_timer_interrupt(void);
 
 #ifdef __cplusplus
 }

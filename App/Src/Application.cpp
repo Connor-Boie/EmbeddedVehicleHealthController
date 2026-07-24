@@ -29,8 +29,13 @@ void Application::initialize()
     heartbeatExecutionCount_ = 0U;
     healthCheckCount_ = 0U;
 
+    timerInterruptCount_ = 0U;
+    processedTimerEventCount_ = 0U;
+    previousHealthCheckTimerCount_ = 0U;
+
     heartbeatEnabled_ = true;
     systemHealthy_ = true;
+    hardwareTimerActive_ = false;
 
     const std::uint32_t currentTimeMs = HAL_GetTick();
     const bool initialPressed = readUserButtonPressed();
@@ -48,6 +53,8 @@ void Application::run()
 {
     const std::uint32_t currentTimeMs = HAL_GetTick();
 
+    processTimerEvents();
+
     if (buttonSampleTimer_.isDue(currentTimeMs))
     {
         processButton(currentTimeMs);
@@ -62,6 +69,11 @@ void Application::run()
     {
         performHealthCheck(currentTimeMs);
     }
+}
+
+void Application::onTimerInterrupt()
+{
+    ++timerInterruptCount_;
 }
 
 std::uint32_t Application::buttonPressCount() const
@@ -79,6 +91,16 @@ std::uint32_t Application::healthCheckCount() const
     return healthCheckCount_;
 }
 
+std::uint32_t Application::timerInterruptCount() const
+{
+    return timerInterruptCount_;
+}
+
+std::uint32_t Application::processedTimerEventCount() const
+{
+    return processedTimerEventCount_;
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -87,6 +109,11 @@ bool Application::heartbeatEnabled() const
 bool Application::systemHealthy() const
 {
     return systemHealthy_;
+}
+
+bool Application::hardwareTimerActive() const
+{
+    return hardwareTimerActive_;
 }
 
 void Application::processButton(std::uint32_t currentTimeMs)
@@ -125,9 +152,38 @@ void Application::performHealthCheck(std::uint32_t currentTimeMs)
     const std::uint32_t timeSinceButtonTaskMs =
         currentTimeMs - lastButtonTaskTimeMs_;
 
-    systemHealthy_ = timeSinceButtonTaskMs <= ButtonTaskTimeoutMs;
+    const bool buttonTaskHealthy =
+        timeSinceButtonTaskMs <= ButtonTaskTimeoutMs;
+
+    const std::uint32_t currentTimerInterruptCount =
+        timerInterruptCount_;
+
+    hardwareTimerActive_ =
+        currentTimerInterruptCount !=
+        previousHealthCheckTimerCount_;
+
+    previousHealthCheckTimerCount_ =
+        currentTimerInterruptCount;
+
+    systemHealthy_ =
+        buttonTaskHealthy && hardwareTimerActive_;
 
     ++healthCheckCount_;
+}
+
+void Application::processTimerEvents()
+{
+    const std::uint32_t observedInterruptCount =
+        timerInterruptCount_;
+
+    if (observedInterruptCount ==
+        processedTimerEventCount_)
+    {
+        return;
+    }
+
+    processedTimerEventCount_ =
+        observedInterruptCount;
 }
 
 bool Application::readUserButtonPressed() const
