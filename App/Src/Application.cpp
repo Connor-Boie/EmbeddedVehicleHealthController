@@ -21,6 +21,7 @@ constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 Application::Application()
     : statusLed_{LD2_GPIO_Port, LD2_Pin},
       buttonDebouncer_{ButtonDebouncePeriodMs},
+      uartReceiver_{},
       telemetry_{&huart2},
       buttonSampleTimer_{ButtonSamplePeriodMs},
       heartbeatTimer_{HeartbeatPeriodMs},
@@ -33,6 +34,7 @@ void Application::initialize()
 {
     statusLed_.turnOff();
 
+    receivedLineCount_ = 0U;
     buttonPressCount_ = 0U;
     heartbeatExecutionCount_ = 0U;
     healthCheckCount_ = 0U;
@@ -63,6 +65,7 @@ void Application::run()
     const std::uint32_t currentTimeMs = HAL_GetTick();
 
     processTimerEvents();
+    processUartReceive();
 
     if (buttonSampleTimer_.isDue(currentTimeMs))
     {
@@ -88,6 +91,16 @@ void Application::run()
 void Application::onTimerInterrupt()
 {
     ++timerInterruptCount_;
+}
+
+void Application::onUartByteReceived(std::uint8_t byte)
+{
+    uartReceiver_.onByteReceivedFromInterrupt(byte);
+}
+
+void Application::onUartReceiveError()
+{
+    uartReceiver_.onReceiveErrorFromInterrupt();
 }
 
 std::uint32_t Application::buttonPressCount() const
@@ -125,6 +138,11 @@ std::uint32_t Application::telemetryFailureCount() const
     return telemetry_.failureCount();
 }
 
+std::uint32_t Application::receivedLineCount() const
+{
+    return receivedLineCount_;
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -157,6 +175,18 @@ void Application::processButton(std::uint32_t currentTimeMs)
         {
             statusLed_.turnOff();
         }
+    }
+}
+
+void Application::processUartReceive()
+{
+    uartReceiver_.process();
+
+    while (uartReceiver_.readLine(
+        receivedLine_,
+        sizeof(receivedLine_)))
+    {
+        ++receivedLineCount_;
     }
 }
 
@@ -218,7 +248,11 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
         heartbeatEnabled_,
         systemHealthy_,
         hardwareTimerActive_,
-        timerInterruptCount_);
+        timerInterruptCount_,
+        receivedLineCount_,
+        uartReceiver_.droppedByteCount(),
+        uartReceiver_.overflowLineCount(),
+        uartReceiver_.receiveErrorCount());
 
     static_cast<void>(sent);
 }

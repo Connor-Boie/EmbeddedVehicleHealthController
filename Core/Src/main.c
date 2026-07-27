@@ -48,6 +48,8 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
+static uint8_t uart2RxByte;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,6 +112,14 @@ int main(void)
   application_init();
 
   if (HAL_TIM_Base_Start_IT(&htim7) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  if (HAL_UART_Receive_IT(
+          &huart2,
+          &uart2RxByte,
+          1U) != HAL_OK)
   {
       Error_Handler();
   }
@@ -283,6 +293,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim)
     if (htim->Instance == TIM7)
     {
         application_timer_interrupt();
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart)
+{
+    if (huart->Instance == USART2)
+    {
+        application_uart_byte_received(uart2RxByte);
+
+        if (HAL_UART_Receive_IT(
+                huart,
+                &uart2RxByte,
+                1U) != HAL_OK)
+        {
+            application_uart_receive_error();
+        }
+    }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart)
+{
+    if (huart->Instance == USART2)
+    {
+        application_uart_receive_error();
+
+        if (HAL_UART_Receive_IT(
+                huart,
+                &uart2RxByte,
+                1U) != HAL_OK)
+        {
+            application_uart_receive_error();
+        }
     }
 }
 

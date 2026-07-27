@@ -21,3 +21,13 @@ extern "C" void application_timer_interrupt(void)
 {
     application.onTimerInterrupt();
 }
+
+extern "C" void application_uart_byte_received(std::uint8_t byte)
+{
+    application.onUartByteReceived(byte);
+}
+
+extern "C" void application_uart_receive_error(void)
+{
+    application.onUartReceiveError();
+}

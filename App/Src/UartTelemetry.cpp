@@ -13,7 +13,11 @@ bool UartTelemetry::sendStatus(
     bool heartbeatEnabled,
     bool systemHealthy,
     bool hardwareTimerActive,
-    std::uint32_t timerInterruptCount)
+    std::uint32_t timerInterruptCount,
+    std::uint32_t receivedLineCount,
+    std::uint32_t droppedByteCount,
+    std::uint32_t overflowLineCount,
+    std::uint32_t receiveErrorCount)
 {
     const int formattedLength = std::snprintf(
         buffer_,
@@ -23,13 +27,21 @@ bool UartTelemetry::sendStatus(
         "heartbeat_enabled=%u "
         "healthy=%u "
         "timer_active=%u "
-        "timer_irq_count=%lu\r\n",
+        "timer_irq_count=%lu "
+        "rx_lines=%lu "
+        "rx_dropped_bytes=%lu "
+        "rx_overflow_lines=%lu "
+        "rx_errors=%lu\r\n",
         static_cast<unsigned long>(uptimeMs),
         static_cast<unsigned long>(buttonPressCount),
         heartbeatEnabled ? 1U : 0U,
         systemHealthy ? 1U : 0U,
         hardwareTimerActive ? 1U : 0U,
-        static_cast<unsigned long>(timerInterruptCount));
+        static_cast<unsigned long>(timerInterruptCount),
+        static_cast<unsigned long>(receivedLineCount),
+        static_cast<unsigned long>(droppedByteCount),
+        static_cast<unsigned long>(overflowLineCount),
+        static_cast<unsigned long>(receiveErrorCount));
 
     if ((formattedLength < 0) ||
         (static_cast<std::size_t>(formattedLength) >= BufferSize))

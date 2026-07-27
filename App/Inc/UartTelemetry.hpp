@@ -17,13 +17,17 @@ public:
         bool heartbeatEnabled,
         bool systemHealthy,
         bool hardwareTimerActive,
-        std::uint32_t timerInterruptCount);
+        std::uint32_t timerInterruptCount,
+        std::uint32_t receivedLineCount,
+        std::uint32_t droppedByteCount,
+        std::uint32_t overflowLineCount,
+        std::uint32_t receiveErrorCount);
 
     [[nodiscard]] std::uint32_t messageCount() const;
     [[nodiscard]] std::uint32_t failureCount() const;
 
 private:
-    static constexpr std::size_t BufferSize = 192U;
+    static constexpr std::size_t BufferSize = 256U;
     static constexpr std::uint32_t TransmitTimeoutMs = 50U;
 
     UART_HandleTypeDef* uart_;

@@ -4,6 +4,7 @@
 #include "ButtonDebouncer.hpp"
 #include "DigitalOutput.hpp"
 #include "PeriodicTimer.hpp"
+#include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
 
 #include <cstdint>
@@ -17,6 +18,8 @@ public:
     void run();
 
     void onTimerInterrupt();
+    void onUartByteReceived(std::uint8_t byte);
+    void onUartReceiveError();
 
     [[nodiscard]] std::uint32_t buttonPressCount() const;
     [[nodiscard]] std::uint32_t heartbeatExecutionCount() const;
@@ -28,12 +31,15 @@ public:
     [[nodiscard]] std::uint32_t telemetryMessageCount() const;
     [[nodiscard]] std::uint32_t telemetryFailureCount() const;
 
+    [[nodiscard]] std::uint32_t receivedLineCount() const;
+
     [[nodiscard]] bool heartbeatEnabled() const;
     [[nodiscard]] bool systemHealthy() const;
     [[nodiscard]] bool hardwareTimerActive() const;
 
 private:
     void processButton(std::uint32_t currentTimeMs);
+    void processUartReceive();
     void updateHeartbeat();
     void performHealthCheck(std::uint32_t currentTimeMs);
     void processTimerEvents();
@@ -43,6 +49,7 @@ private:
 
     DigitalOutput statusLed_;
     ButtonDebouncer buttonDebouncer_;
+    UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
 
     PeriodicTimer buttonSampleTimer_;
@@ -50,6 +57,9 @@ private:
     PeriodicTimer healthCheckTimer_;
     PeriodicTimer telemetryTimer_;
 
+    char receivedLine_[UartCommandReceiver::LineCapacity]{};
+
+    std::uint32_t receivedLineCount_{0U};
     std::uint32_t buttonPressCount_{0U};
     std::uint32_t heartbeatExecutionCount_{0U};
     std::uint32_t healthCheckCount_{0U};
