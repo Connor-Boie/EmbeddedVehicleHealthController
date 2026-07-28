@@ -2,6 +2,7 @@
 #define APPLICATION_HPP
 
 #include "ButtonDebouncer.hpp"
+#include "CommandParser.hpp"
 #include "DigitalOutput.hpp"
 #include "PeriodicTimer.hpp"
 #include "UartCommandReceiver.hpp"
@@ -32,6 +33,8 @@ public:
     [[nodiscard]] std::uint32_t telemetryFailureCount() const;
 
     [[nodiscard]] std::uint32_t receivedLineCount() const;
+    [[nodiscard]] std::uint32_t validCommandCount() const;
+    [[nodiscard]] std::uint32_t invalidCommandCount() const;
 
     [[nodiscard]] bool heartbeatEnabled() const;
     [[nodiscard]] bool systemHealthy() const;
@@ -39,7 +42,12 @@ public:
 
 private:
     void processButton(std::uint32_t currentTimeMs);
-    void processUartReceive();
+    void processUartReceive(std::uint32_t currentTimeMs);
+    void handleCommand(
+        CommandType command,
+        std::uint32_t currentTimeMs);
+    void clearApplicationCounters();
+
     void updateHeartbeat();
     void performHealthCheck(std::uint32_t currentTimeMs);
     void processTimerEvents();
@@ -60,6 +68,9 @@ private:
     char receivedLine_[UartCommandReceiver::LineCapacity]{};
 
     std::uint32_t receivedLineCount_{0U};
+    std::uint32_t validCommandCount_{0U};
+    std::uint32_t invalidCommandCount_{0U};
+
     std::uint32_t buttonPressCount_{0U};
     std::uint32_t heartbeatExecutionCount_{0U};
     std::uint32_t healthCheckCount_{0U};

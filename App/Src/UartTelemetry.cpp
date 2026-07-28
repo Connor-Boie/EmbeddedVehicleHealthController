@@ -15,6 +15,8 @@ bool UartTelemetry::sendStatus(
     bool hardwareTimerActive,
     std::uint32_t timerInterruptCount,
     std::uint32_t receivedLineCount,
+    std::uint32_t validCommandCount,
+    std::uint32_t invalidCommandCount,
     std::uint32_t droppedByteCount,
     std::uint32_t overflowLineCount,
     std::uint32_t receiveErrorCount)
@@ -29,6 +31,8 @@ bool UartTelemetry::sendStatus(
         "timer_active=%u "
         "timer_irq_count=%lu "
         "rx_lines=%lu "
+        "valid_commands=%lu "
+        "invalid_commands=%lu "
         "rx_dropped_bytes=%lu "
         "rx_overflow_lines=%lu "
         "rx_errors=%lu\r\n",
@@ -39,9 +43,48 @@ bool UartTelemetry::sendStatus(
         hardwareTimerActive ? 1U : 0U,
         static_cast<unsigned long>(timerInterruptCount),
         static_cast<unsigned long>(receivedLineCount),
+        static_cast<unsigned long>(validCommandCount),
+        static_cast<unsigned long>(invalidCommandCount),
         static_cast<unsigned long>(droppedByteCount),
         static_cast<unsigned long>(overflowLineCount),
         static_cast<unsigned long>(receiveErrorCount));
+
+    if ((formattedLength < 0) ||
+        (static_cast<std::size_t>(formattedLength) >= BufferSize))
+    {
+        ++failureCount_;
+        return false;
+    }
+
+    const HAL_StatusTypeDef transmitStatus = HAL_UART_Transmit(
+        uart_,
+        reinterpret_cast<std::uint8_t*>(buffer_),
+        static_cast<std::uint16_t>(formattedLength),
+        TransmitTimeoutMs);
+
+    if (transmitStatus != HAL_OK)
+    {
+        ++failureCount_;
+        return false;
+    }
+
+    ++messageCount_;
+    return true;
+}
+
+bool UartTelemetry::sendText(const char* text)
+{
+    if (text == nullptr)
+    {
+        ++failureCount_;
+        return false;
+    }
+
+    const int formattedLength = std::snprintf(
+        buffer_,
+        BufferSize,
+        "%s\r\n",
+        text);
 
     if ((formattedLength < 0) ||
         (static_cast<std::size_t>(formattedLength) >= BufferSize))

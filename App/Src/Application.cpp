@@ -35,6 +35,9 @@ void Application::initialize()
     statusLed_.turnOff();
 
     receivedLineCount_ = 0U;
+    validCommandCount_ = 0U;
+    invalidCommandCount_ = 0U;
+
     buttonPressCount_ = 0U;
     heartbeatExecutionCount_ = 0U;
     healthCheckCount_ = 0U;
@@ -65,7 +68,7 @@ void Application::run()
     const std::uint32_t currentTimeMs = HAL_GetTick();
 
     processTimerEvents();
-    processUartReceive();
+    processUartReceive(currentTimeMs);
 
     if (buttonSampleTimer_.isDue(currentTimeMs))
     {
@@ -143,6 +146,16 @@ std::uint32_t Application::receivedLineCount() const
     return receivedLineCount_;
 }
 
+std::uint32_t Application::validCommandCount() const
+{
+    return validCommandCount_;
+}
+
+std::uint32_t Application::invalidCommandCount() const
+{
+    return invalidCommandCount_;
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -178,7 +191,8 @@ void Application::processButton(std::uint32_t currentTimeMs)
     }
 }
 
-void Application::processUartReceive()
+void Application::processUartReceive(
+    std::uint32_t currentTimeMs)
 {
     uartReceiver_.process();
 
@@ -187,7 +201,87 @@ void Application::processUartReceive()
         sizeof(receivedLine_)))
     {
         ++receivedLineCount_;
+
+        const CommandType command =
+            CommandParser::parse(receivedLine_);
+
+        handleCommand(command, currentTimeMs);
     }
+}
+
+void Application::handleCommand(
+    CommandType command,
+    std::uint32_t currentTimeMs)
+{
+    switch (command)
+    {
+        case CommandType::Status:
+        {
+            ++validCommandCount_;
+            sendTelemetry(currentTimeMs);
+            break;
+        }
+
+        case CommandType::HeartbeatOn:
+        {
+            ++validCommandCount_;
+            heartbeatEnabled_ = true;
+
+            const bool sent =
+                telemetry_.sendText("OK HEARTBEAT ON");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::HeartbeatOff:
+        {
+            ++validCommandCount_;
+            heartbeatEnabled_ = false;
+            statusLed_.turnOff();
+
+            const bool sent =
+                telemetry_.sendText("OK HEARTBEAT OFF");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::Clear:
+        {
+            clearApplicationCounters();
+
+            const bool sent =
+                telemetry_.sendText("OK COUNTERS CLEARED");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::Invalid:
+        default:
+        {
+            ++invalidCommandCount_;
+
+            const bool sent =
+                telemetry_.sendText(
+                    "ERROR INVALID COMMAND");
+
+            static_cast<void>(sent);
+            break;
+        }
+    }
+}
+
+void Application::clearApplicationCounters()
+{
+    receivedLineCount_ = 0U;
+    validCommandCount_ = 0U;
+    invalidCommandCount_ = 0U;
+
+    buttonPressCount_ = 0U;
+    heartbeatExecutionCount_ = 0U;
+    healthCheckCount_ = 0U;
 }
 
 void Application::updateHeartbeat()
@@ -250,6 +344,8 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
         hardwareTimerActive_,
         timerInterruptCount_,
         receivedLineCount_,
+        validCommandCount_,
+        invalidCommandCount_,
         uartReceiver_.droppedByteCount(),
         uartReceiver_.overflowLineCount(),
         uartReceiver_.receiveErrorCount());
