@@ -21,6 +21,7 @@ constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 Application::Application()
     : statusLed_{LD2_GPIO_Port, LD2_Pin},
       buttonDebouncer_{ButtonDebouncePeriodMs},
+      faultManager_{},
       uartReceiver_{},
       telemetry_{&huart2},
       buttonSampleTimer_{ButtonSamplePeriodMs},
@@ -156,6 +157,16 @@ std::uint32_t Application::invalidCommandCount() const
     return invalidCommandCount_;
 }
 
+std::uint32_t Application::activeFaultMask() const
+{
+    return faultManager_.activeFaultMask();
+}
+
+std::uint32_t Application::latchedFaultMask() const
+{
+    return faultManager_.latchedFaultMask();
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -222,6 +233,13 @@ void Application::handleCommand(
             break;
         }
 
+        case CommandType::Faults:
+        {
+            ++validCommandCount_;
+            sendTelemetry(currentTimeMs);
+            break;
+        }
+
         case CommandType::HeartbeatOn:
         {
             ++validCommandCount_;
@@ -247,12 +265,24 @@ void Application::handleCommand(
             break;
         }
 
-        case CommandType::Clear:
+        case CommandType::ClearCounters:
         {
             clearApplicationCounters();
 
             const bool sent =
                 telemetry_.sendText("OK COUNTERS CLEARED");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::ClearFaults:
+        {
+            ++validCommandCount_;
+            faultManager_.clearLatchedFaults();
+
+            const bool sent =
+                telemetry_.sendText("OK FAULTS CLEARED");
 
             static_cast<void>(sent);
             break;
@@ -313,8 +343,15 @@ void Application::performHealthCheck(std::uint32_t currentTimeMs)
     previousHealthCheckTimerCount_ =
         currentTimerInterruptCount;
 
-    systemHealthy_ =
-        buttonTaskHealthy && hardwareTimerActive_;
+    faultManager_.setFault(
+        Fault::ButtonTaskTimeout,
+        !buttonTaskHealthy);
+
+    faultManager_.setFault(
+        Fault::HardwareTimerInactive,
+        !hardwareTimerActive_);
+
+    systemHealthy_ = !faultManager_.hasActiveFaults();
 
     ++healthCheckCount_;
 }
@@ -346,6 +383,8 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
         receivedLineCount_,
         validCommandCount_,
         invalidCommandCount_,
+        faultManager_.activeFaultMask(),
+        faultManager_.latchedFaultMask(),
         uartReceiver_.droppedByteCount(),
         uartReceiver_.overflowLineCount(),
         uartReceiver_.receiveErrorCount());

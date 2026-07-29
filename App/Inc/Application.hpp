@@ -4,6 +4,7 @@
 #include "ButtonDebouncer.hpp"
 #include "CommandParser.hpp"
 #include "DigitalOutput.hpp"
+#include "FaultManager.hpp"
 #include "PeriodicTimer.hpp"
 #include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
@@ -36,6 +37,9 @@ public:
     [[nodiscard]] std::uint32_t validCommandCount() const;
     [[nodiscard]] std::uint32_t invalidCommandCount() const;
 
+    [[nodiscard]] std::uint32_t activeFaultMask() const;
+    [[nodiscard]] std::uint32_t latchedFaultMask() const;
+
     [[nodiscard]] bool heartbeatEnabled() const;
     [[nodiscard]] bool systemHealthy() const;
     [[nodiscard]] bool hardwareTimerActive() const;
@@ -57,6 +61,7 @@ private:
 
     DigitalOutput statusLed_;
     ButtonDebouncer buttonDebouncer_;
+    FaultManager faultManager_;
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
 

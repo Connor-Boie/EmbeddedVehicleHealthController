@@ -12,6 +12,11 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::Status;
     }
 
+    if (stringsEqual(line, "FAULTS"))
+    {
+        return CommandType::Faults;
+    }
+
     if (stringsEqual(line, "HEARTBEAT ON"))
     {
         return CommandType::HeartbeatOn;
@@ -24,7 +29,12 @@ CommandType CommandParser::parse(const char* line)
 
     if (stringsEqual(line, "CLEAR"))
     {
-        return CommandType::Clear;
+        return CommandType::ClearCounters;
+    }
+
+    if (stringsEqual(line, "CLEAR FAULTS"))
+    {
+        return CommandType::ClearFaults;
     }
 
     return CommandType::Invalid;

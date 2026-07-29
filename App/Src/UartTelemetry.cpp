@@ -17,6 +17,8 @@ bool UartTelemetry::sendStatus(
     std::uint32_t receivedLineCount,
     std::uint32_t validCommandCount,
     std::uint32_t invalidCommandCount,
+    std::uint32_t activeFaultMask,
+    std::uint32_t latchedFaultMask,
     std::uint32_t droppedByteCount,
     std::uint32_t overflowLineCount,
     std::uint32_t receiveErrorCount)
@@ -33,6 +35,8 @@ bool UartTelemetry::sendStatus(
         "rx_lines=%lu "
         "valid_commands=%lu "
         "invalid_commands=%lu "
+        "active_faults=0x%08lX "
+        "latched_faults=0x%08lX "
         "rx_dropped_bytes=%lu "
         "rx_overflow_lines=%lu "
         "rx_errors=%lu\r\n",
@@ -45,6 +49,8 @@ bool UartTelemetry::sendStatus(
         static_cast<unsigned long>(receivedLineCount),
         static_cast<unsigned long>(validCommandCount),
         static_cast<unsigned long>(invalidCommandCount),
+        static_cast<unsigned long>(activeFaultMask),
+        static_cast<unsigned long>(latchedFaultMask),
         static_cast<unsigned long>(droppedByteCount),
         static_cast<unsigned long>(overflowLineCount),
         static_cast<unsigned long>(receiveErrorCount));

@@ -1,6 +1,6 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, processes user input, and exposes runtime diagnostics through UART.
+A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, detects and latches runtime faults, processes user input, and exposes diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate C++ application layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -14,6 +14,8 @@ The project uses STM32CubeMX-generated hardware initialization together with a s
 - TIM7 hardware timer interrupts
 - Main-loop processing of interrupt-generated timer events
 - Runtime health monitoring
+- Bit-mask-based active fault tracking
+- Latched historical fault tracking
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
@@ -48,6 +50,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── ButtonDebouncer.hpp
 │   │   ├── CommandParser.hpp
 │   │   ├── DigitalOutput.hpp
+│   │   ├── FaultManager.hpp
 │   │   ├── PeriodicTimer.hpp
 │   │   ├── UartCommandReceiver.hpp
 │   │   ├── UartTelemetry.hpp
@@ -57,6 +60,7 @@ EmbeddedVehicleHealthController/
 │       ├── ButtonDebouncer.cpp
 │       ├── CommandParser.cpp
 │       ├── DigitalOutput.cpp
+│       ├── FaultManager.cpp
 │       ├── PeriodicTimer.cpp
 │       ├── UartCommandReceiver.cpp
 │       ├── UartTelemetry.cpp
@@ -88,6 +92,7 @@ C++ Application object
         ├── DigitalOutput
         ├── ButtonDebouncer
         ├── PeriodicTimer
+        ├── FaultManager
         ├── UartCommandReceiver
         ├── CommandParser
         └── UartTelemetry
@@ -180,6 +185,54 @@ This keeps the interrupt service path short and avoids performing complex work i
 
 The health monitor verifies that the TIM7 interrupt counter continues changing.
 
+## Fault Monitoring
+
+The `FaultManager` tracks failures using 32-bit masks.
+
+Two masks are maintained:
+
+```text
+Active fault mask
+Latched fault mask
+```
+
+### Active Faults
+
+An active fault represents a failure that is occurring during the current health check.
+
+When the monitored condition recovers, its active fault bit is cleared.
+
+### Latched Faults
+
+A latched fault records that a failure has occurred.
+
+Its bit remains set after the active condition recovers, preserving evidence of intermittent failures.
+
+The `CLEAR FAULTS` command clears resolved historical faults. A fault that is still active remains latched.
+
+### Current Fault Bits
+
+```text
+Bit 0 — 0x00000001 — Button task timeout
+Bit 1 — 0x00000002 — Hardware timer inactive
+```
+
+Common mask values:
+
+```text
+0x00000000 — No faults
+0x00000001 — Button task timeout
+0x00000002 — Hardware timer inactive
+0x00000003 — Both faults
+```
+
+Overall system health is derived from the active fault mask.
+
+```text
+No active faults  → healthy=1
+Active fault      → healthy=0
+```
+
 ## UART Telemetry
 
 USART2 is configured for asynchronous serial communication through the ST-LINK virtual COM port.
@@ -206,6 +259,8 @@ timer_irq_count
 rx_lines
 valid_commands
 invalid_commands
+active_faults
+latched_faults
 rx_dropped_bytes
 rx_overflow_lines
 rx_errors
@@ -214,7 +269,7 @@ rx_errors
 Example:
 
 ```text
-uptime_ms=12000 button_presses=1 heartbeat_enabled=1 healthy=1 timer_active=1 timer_irq_count=120 rx_lines=3 valid_commands=2 invalid_commands=1 rx_dropped_bytes=0 rx_overflow_lines=0 rx_errors=0
+uptime_ms=12000 button_presses=1 heartbeat_enabled=1 healthy=1 timer_active=1 timer_irq_count=120 rx_lines=3 valid_commands=2 invalid_commands=1 active_faults=0x00000000 latched_faults=0x00000002 rx_dropped_bytes=0 rx_overflow_lines=0 rx_errors=0
 ```
 
 Telemetry uses a fixed-size character buffer and bounded UART transmission timeout.
@@ -294,6 +349,14 @@ STATUS
 
 Immediately transmits the current status telemetry.
 
+### Request Fault Status
+
+```text
+FAULTS
+```
+
+Immediately transmits telemetry containing the active and latched fault masks.
+
 ### Enable Heartbeat
 
 ```text
@@ -343,7 +406,23 @@ Response:
 OK COUNTERS CLEARED
 ```
 
-Hardware timer and low-level UART diagnostic counters are intentionally not reset.
+Hardware timer, fault, and low-level UART diagnostic counters are intentionally not reset.
+
+### Clear Latched Faults
+
+```text
+CLEAR FAULTS
+```
+
+Clears historical faults that are no longer active.
+
+A currently active fault remains latched until the underlying condition recovers.
+
+Response:
+
+```text
+OK FAULTS CLEARED
+```
 
 ### Invalid Commands
 
@@ -364,13 +443,16 @@ The application currently checks:
 - Whether the button-sampling task ran within its expected time window
 - Whether TIM7 hardware interrupts continue occurring
 
-The system reports healthy only when both checks pass.
+Each failed check sets a separate active and latched fault bit.
+
+The system reports healthy only when the active fault mask is zero.
 
 Telemetry fields:
 
 ```text
 healthy=1
 timer_active=1
+active_faults=0x00000000
 ```
 
 indicate that the monitored application task and hardware timer are operating as expected.
@@ -395,5 +477,7 @@ Only one program can open the COM port at a time.
 - Use fixed-capacity buffers
 - Use bounded blocking operations
 - Keep hardware-specific dependencies near the application boundary
-- Represent command results with strongly typed enumerations
+- Represent commands and faults with strongly typed enumerations
+- Represent multiple faults efficiently with bit masks
+- Preserve intermittent failures with latched fault history
 - Track failures and overflow conditions rather than silently ignoring them

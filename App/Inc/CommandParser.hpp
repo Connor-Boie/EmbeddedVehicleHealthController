@@ -4,9 +4,11 @@
 enum class CommandType
 {
     Status,
+    Faults,
     HeartbeatOn,
     HeartbeatOff,
-    Clear,
+    ClearCounters,
+    ClearFaults,
     Invalid
 };
 
