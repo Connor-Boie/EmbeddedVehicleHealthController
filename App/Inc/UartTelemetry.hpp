@@ -23,6 +23,7 @@ public:
         std::uint32_t invalidCommandCount,
         std::uint32_t activeFaultMask,
         std::uint32_t latchedFaultMask,
+        std::uint32_t injectedFaultMask,
         std::uint32_t droppedByteCount,
         std::uint32_t overflowLineCount,
         std::uint32_t receiveErrorCount);

@@ -1,6 +1,6 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, detects and latches runtime faults, processes user input, and exposes diagnostics through UART.
+A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, detects and latches runtime faults, supports controlled fault injection, processes user input, and exposes diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate C++ application layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -16,6 +16,8 @@ The project uses STM32CubeMX-generated hardware initialization together with a s
 - Runtime health monitoring
 - Bit-mask-based active fault tracking
 - Latched historical fault tracking
+- Controlled diagnostic fault injection
+- Fault recovery and latching verification through UART commands
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
@@ -50,6 +52,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── ButtonDebouncer.hpp
 │   │   ├── CommandParser.hpp
 │   │   ├── DigitalOutput.hpp
+│   │   ├── FaultInjector.hpp
 │   │   ├── FaultManager.hpp
 │   │   ├── PeriodicTimer.hpp
 │   │   ├── UartCommandReceiver.hpp
@@ -60,6 +63,7 @@ EmbeddedVehicleHealthController/
 │       ├── ButtonDebouncer.cpp
 │       ├── CommandParser.cpp
 │       ├── DigitalOutput.cpp
+│       ├── FaultInjector.cpp
 │       ├── FaultManager.cpp
 │       ├── PeriodicTimer.cpp
 │       ├── UartCommandReceiver.cpp
@@ -92,6 +96,7 @@ C++ Application object
         ├── DigitalOutput
         ├── ButtonDebouncer
         ├── PeriodicTimer
+        ├── FaultInjector
         ├── FaultManager
         ├── UartCommandReceiver
         ├── CommandParser
@@ -198,7 +203,7 @@ Latched fault mask
 
 ### Active Faults
 
-An active fault represents a failure that is occurring during the current health check.
+An active fault represents a failure occurring during the current health check.
 
 When the monitored condition recovers, its active fault bit is cleared.
 
@@ -233,6 +238,36 @@ No active faults  → healthy=1
 Active fault      → healthy=0
 ```
 
+## Diagnostic Fault Injection
+
+`FaultInjector` allows the existing faults to be simulated without stopping tasks or changing hardware configuration.
+
+The injector uses the same bit assignments as `FaultManager`.
+
+```text
+0x00000001 — Simulated button task timeout
+0x00000002 — Simulated hardware timer inactivity
+```
+
+The health check combines real and injected conditions:
+
+```text
+Fault active = real failure OR diagnostic injection
+```
+
+Fault injection cannot hide or override a real failure.
+
+Clearing an injection allows the active fault to recover during the next health check. The latched fault remains set until the operator issues `CLEAR FAULTS`.
+
+This supports repeatable testing of:
+
+- Fault activation
+- Multiple simultaneous faults
+- Overall unhealthy state
+- Active-fault recovery
+- Latched historical fault preservation
+- Controlled clearing of recovered fault history
+
 ## UART Telemetry
 
 USART2 is configured for asynchronous serial communication through the ST-LINK virtual COM port.
@@ -247,7 +282,7 @@ Stop bits:    1
 Flow control: None
 ```
 
-Periodic telemetry includes fields such as:
+Periodic telemetry includes:
 
 ```text
 uptime_ms
@@ -261,6 +296,7 @@ valid_commands
 invalid_commands
 active_faults
 latched_faults
+injected_faults
 rx_dropped_bytes
 rx_overflow_lines
 rx_errors
@@ -269,8 +305,10 @@ rx_errors
 Example:
 
 ```text
-uptime_ms=12000 button_presses=1 heartbeat_enabled=1 healthy=1 timer_active=1 timer_irq_count=120 rx_lines=3 valid_commands=2 invalid_commands=1 active_faults=0x00000000 latched_faults=0x00000002 rx_dropped_bytes=0 rx_overflow_lines=0 rx_errors=0
+uptime_ms=12000 button_presses=1 heartbeat_enabled=1 healthy=0 timer_active=1 timer_irq_count=120 rx_lines=3 valid_commands=2 invalid_commands=0 active_faults=0x00000002 latched_faults=0x00000002 injected_faults=0x00000002 rx_dropped_bytes=0 rx_overflow_lines=0 rx_errors=0
 ```
+
+The physical timer may report `timer_active=1` while the timer fault bit is active when that fault is being deliberately injected.
 
 Telemetry uses a fixed-size character buffer and bounded UART transmission timeout.
 
@@ -347,7 +385,7 @@ Commands are uppercase and must match exactly.
 STATUS
 ```
 
-Immediately transmits the current status telemetry.
+Immediately transmits current telemetry.
 
 ### Request Fault Status
 
@@ -355,15 +393,13 @@ Immediately transmits the current status telemetry.
 FAULTS
 ```
 
-Immediately transmits telemetry containing the active and latched fault masks.
+Immediately transmits telemetry containing active, latched, and injected fault masks.
 
 ### Enable Heartbeat
 
 ```text
 HEARTBEAT ON
 ```
-
-Enables heartbeat LED behavior.
 
 Response:
 
@@ -385,20 +421,57 @@ Response:
 OK HEARTBEAT OFF
 ```
 
+### Inject Button Task Fault
+
+```text
+INJECT BUTTON FAULT
+```
+
+Enables a simulated button-task timeout.
+
+Response:
+
+```text
+OK BUTTON FAULT INJECTED
+```
+
+### Inject Hardware Timer Fault
+
+```text
+INJECT TIMER FAULT
+```
+
+Enables a simulated hardware-timer failure without stopping TIM7.
+
+Response:
+
+```text
+OK TIMER FAULT INJECTED
+```
+
+### Clear Injected Faults
+
+```text
+CLEAR INJECTED FAULTS
+```
+
+Disables all diagnostic fault injections.
+
+Active faults are reevaluated during the next health check. Latched fault history is preserved.
+
+Response:
+
+```text
+OK INJECTED FAULTS CLEARED
+```
+
 ### Clear Application Counters
 
 ```text
 CLEAR
 ```
 
-Resets software-level application counters, including:
-
-- Received line count
-- Valid command count
-- Invalid command count
-- Button press count
-- Heartbeat execution count
-- Health check count
+Resets software-level application counters.
 
 Response:
 
@@ -406,7 +479,7 @@ Response:
 OK COUNTERS CLEARED
 ```
 
-Hardware timer, fault, and low-level UART diagnostic counters are intentionally not reset.
+Hardware timer, fault, injection, and low-level UART diagnostic state are intentionally not reset.
 
 ### Clear Latched Faults
 
@@ -416,7 +489,7 @@ CLEAR FAULTS
 
 Clears historical faults that are no longer active.
 
-A currently active fault remains latched until the underlying condition recovers.
+A currently active fault remains latched.
 
 Response:
 
@@ -432,36 +505,24 @@ Unrecognized commands receive:
 ERROR INVALID COMMAND
 ```
 
-Invalid commands increase the `invalid_commands` counter.
-
-Command matching is currently case-sensitive. For example, `STATUS` is valid while `status` is invalid.
+Command matching is case-sensitive.
 
 ## Health Monitoring
 
-The application currently checks:
+The application checks:
 
 - Whether the button-sampling task ran within its expected time window
 - Whether TIM7 hardware interrupts continue occurring
 
-Each failed check sets a separate active and latched fault bit.
+Each health result is combined with its corresponding diagnostic injection.
 
-The system reports healthy only when the active fault mask is zero.
-
-Telemetry fields:
-
-```text
-healthy=1
-timer_active=1
-active_faults=0x00000000
-```
-
-indicate that the monitored application task and hardware timer are operating as expected.
+The system reports healthy only when the resulting active fault mask is zero.
 
 ## Build and Run
 
 1. Open the project in STM32CubeIDE.
 2. Generate or update peripheral configuration through the project `.ioc` file.
-3. Build the project.
+3. Refresh and build the project.
 4. Connect the NUCLEO board through the ST-LINK USB connector.
 5. Program the board using the STM32CubeIDE Run or Debug configuration.
 6. Open the ST-LINK virtual COM port in a serial terminal using 115200 8-N-1 with no flow control.
@@ -480,4 +541,6 @@ Only one program can open the COM port at a time.
 - Represent commands and faults with strongly typed enumerations
 - Represent multiple faults efficiently with bit masks
 - Preserve intermittent failures with latched fault history
+- Keep test injection separate from production fault state
+- Use the same health-evaluation path for real and simulated failures
 - Track failures and overflow conditions rather than silently ignoring them

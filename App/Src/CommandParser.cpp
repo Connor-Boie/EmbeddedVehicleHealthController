@@ -27,6 +27,16 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::HeartbeatOff;
     }
 
+    if (stringsEqual(line, "INJECT BUTTON FAULT"))
+    {
+        return CommandType::InjectButtonFault;
+    }
+
+    if (stringsEqual(line, "INJECT TIMER FAULT"))
+    {
+        return CommandType::InjectTimerFault;
+    }
+
     if (stringsEqual(line, "CLEAR"))
     {
         return CommandType::ClearCounters;
@@ -35,6 +45,11 @@ CommandType CommandParser::parse(const char* line)
     if (stringsEqual(line, "CLEAR FAULTS"))
     {
         return CommandType::ClearFaults;
+    }
+
+    if (stringsEqual(line, "CLEAR INJECTED FAULTS"))
+    {
+        return CommandType::ClearInjectedFaults;
     }
 
     return CommandType::Invalid;

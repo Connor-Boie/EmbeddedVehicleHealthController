@@ -21,6 +21,7 @@ constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 Application::Application()
     : statusLed_{LD2_GPIO_Port, LD2_Pin},
       buttonDebouncer_{ButtonDebouncePeriodMs},
+      faultInjector_{},
       faultManager_{},
       uartReceiver_{},
       telemetry_{&huart2},
@@ -167,6 +168,11 @@ std::uint32_t Application::latchedFaultMask() const
     return faultManager_.latchedFaultMask();
 }
 
+std::uint32_t Application::injectedFaultMask() const
+{
+    return faultInjector_.injectedFaultMask();
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -265,6 +271,36 @@ void Application::handleCommand(
             break;
         }
 
+        case CommandType::InjectButtonFault:
+        {
+            ++validCommandCount_;
+
+            faultInjector_.injectFault(
+                Fault::ButtonTaskTimeout);
+
+            const bool sent =
+                telemetry_.sendText(
+                    "OK BUTTON FAULT INJECTED");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::InjectTimerFault:
+        {
+            ++validCommandCount_;
+
+            faultInjector_.injectFault(
+                Fault::HardwareTimerInactive);
+
+            const bool sent =
+                telemetry_.sendText(
+                    "OK TIMER FAULT INJECTED");
+
+            static_cast<void>(sent);
+            break;
+        }
+
         case CommandType::ClearCounters:
         {
             clearApplicationCounters();
@@ -283,6 +319,19 @@ void Application::handleCommand(
 
             const bool sent =
                 telemetry_.sendText("OK FAULTS CLEARED");
+
+            static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::ClearInjectedFaults:
+        {
+            ++validCommandCount_;
+            faultInjector_.clearAll();
+
+            const bool sent =
+                telemetry_.sendText(
+                    "OK INJECTED FAULTS CLEARED");
 
             static_cast<void>(sent);
             break;
@@ -343,13 +392,23 @@ void Application::performHealthCheck(std::uint32_t currentTimeMs)
     previousHealthCheckTimerCount_ =
         currentTimerInterruptCount;
 
+    const bool buttonTaskFaultActive =
+        (!buttonTaskHealthy) ||
+        faultInjector_.isInjected(
+            Fault::ButtonTaskTimeout);
+
+    const bool hardwareTimerFaultActive =
+        (!hardwareTimerActive_) ||
+        faultInjector_.isInjected(
+            Fault::HardwareTimerInactive);
+
     faultManager_.setFault(
         Fault::ButtonTaskTimeout,
-        !buttonTaskHealthy);
+        buttonTaskFaultActive);
 
     faultManager_.setFault(
         Fault::HardwareTimerInactive,
-        !hardwareTimerActive_);
+        hardwareTimerFaultActive);
 
     systemHealthy_ = !faultManager_.hasActiveFaults();
 
@@ -385,6 +444,7 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
         invalidCommandCount_,
         faultManager_.activeFaultMask(),
         faultManager_.latchedFaultMask(),
+        faultInjector_.injectedFaultMask(),
         uartReceiver_.droppedByteCount(),
         uartReceiver_.overflowLineCount(),
         uartReceiver_.receiveErrorCount());

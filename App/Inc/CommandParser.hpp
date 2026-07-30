@@ -7,8 +7,11 @@ enum class CommandType
     Faults,
     HeartbeatOn,
     HeartbeatOff,
+    InjectButtonFault,
+    InjectTimerFault,
     ClearCounters,
     ClearFaults,
+    ClearInjectedFaults,
     Invalid
 };
 
