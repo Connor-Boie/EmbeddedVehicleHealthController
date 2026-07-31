@@ -37,6 +37,11 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::InjectTimerFault;
     }
 
+    if (stringsEqual(line, "WATCHDOG TEST"))
+    {
+        return CommandType::WatchdogTest;
+    }
+
     if (stringsEqual(line, "CLEAR"))
     {
         return CommandType::ClearCounters;

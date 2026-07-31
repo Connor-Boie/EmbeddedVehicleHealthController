@@ -1,6 +1,6 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, detects and latches runtime faults, supports controlled fault injection, processes user input, and exposes diagnostics through UART.
+A bare-metal embedded C++ application for the STM32 NUCLEO-F446RE that monitors system activity, controls a status heartbeat, detects and latches runtime faults, supports controlled fault injection, recovers from application stalls through an independent watchdog, processes user input, and exposes diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate C++ application layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -18,13 +18,15 @@ The project uses STM32CubeMX-generated hardware initialization together with a s
 - Latched historical fault tracking
 - Controlled diagnostic fault injection
 - Fault recovery and latching verification through UART commands
+- Independent hardware watchdog protection
+- Controlled watchdog-reset testing through UART
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
 - Fixed-capacity UART line assembly without dynamic allocation
 - UART command parsing and validation
 - Immediate command acknowledgments and error responses
-- Runtime counters for valid and invalid commands
+- Runtime counters for commands, watchdog refreshes, and communication failures
 - UART overflow, dropped-byte, and receive-error diagnostics
 
 ## Hardware
@@ -57,6 +59,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── PeriodicTimer.hpp
 │   │   ├── UartCommandReceiver.hpp
 │   │   ├── UartTelemetry.hpp
+│   │   ├── Watchdog.hpp
 │   │   └── application_bridge.h
 │   └── Src/
 │       ├── Application.cpp
@@ -68,6 +71,7 @@ EmbeddedVehicleHealthController/
 │       ├── PeriodicTimer.cpp
 │       ├── UartCommandReceiver.cpp
 │       ├── UartTelemetry.cpp
+│       ├── Watchdog.cpp
 │       └── application_bridge.cpp
 ├── Core/
 │   ├── Inc/
@@ -100,7 +104,8 @@ C++ Application object
         ├── FaultManager
         ├── UartCommandReceiver
         ├── CommandParser
-        └── UartTelemetry
+        ├── UartTelemetry
+        └── Watchdog
 ```
 
 ### Generated C Layer
@@ -113,6 +118,7 @@ The generated layer initializes:
 - GPIO
 - USART2
 - TIM7
+- The independent watchdog
 - The on-board LED
 - The USER button
 
@@ -133,15 +139,16 @@ The application uses `HAL_GetTick()` and reusable `PeriodicTimer` objects to sch
 Current task periods are:
 
 ```text
-Button sampling:     5 ms
-Heartbeat update:  500 ms
-Health check:     1000 ms
-Telemetry:        1000 ms
+Button sampling:       5 ms
+Heartbeat update:    500 ms
+Health check:       1000 ms
+Telemetry:          1000 ms
+Watchdog refresh:    500 ms
 ```
 
 Each call to `Application::run()` checks which tasks are due and runs them cooperatively.
 
-No task intentionally waits for another scheduled task to finish.
+The watchdog refresh occurs near the end of the application-loop path so a stall earlier in the loop prevents servicing the watchdog.
 
 ## GPIO Behavior
 
@@ -186,9 +193,47 @@ Increment timer interrupt counter
 
 Application-level processing occurs later in the main loop.
 
-This keeps the interrupt service path short and avoids performing complex work inside interrupt context.
-
 The health monitor verifies that the TIM7 interrupt counter continues changing.
+
+## Independent Watchdog
+
+The STM32 independent watchdog protects against complete application stalls.
+
+The watchdog uses the independent low-speed internal oscillator and is configured for an approximate two-second timeout.
+
+Configuration:
+
+```text
+Prescaler:      64
+Reload counter: 999
+Approx. timeout: 2 seconds
+```
+
+The application refreshes the watchdog every 500 milliseconds during normal operation.
+
+```text
+Main loop completes scheduled work
+        │
+        ▼
+Watchdog refresh becomes due
+        │
+        ▼
+HAL_IWDG_Refresh()
+```
+
+If the application loop stops progressing, watchdog refreshes stop and the MCU resets when the timeout expires.
+
+Telemetry reports:
+
+```text
+watchdog_refresh_enabled
+watchdog_refreshes
+watchdog_failures
+```
+
+The `WATCHDOG TEST` command deliberately disables application refreshes so the hardware reset behavior can be tested safely.
+
+After the reset, normal startup enables refreshes again, preventing a permanent reset loop.
 
 ## Fault Monitoring
 
@@ -222,32 +267,9 @@ Bit 0 — 0x00000001 — Button task timeout
 Bit 1 — 0x00000002 — Hardware timer inactive
 ```
 
-Common mask values:
-
-```text
-0x00000000 — No faults
-0x00000001 — Button task timeout
-0x00000002 — Hardware timer inactive
-0x00000003 — Both faults
-```
-
-Overall system health is derived from the active fault mask.
-
-```text
-No active faults  → healthy=1
-Active fault      → healthy=0
-```
-
 ## Diagnostic Fault Injection
 
-`FaultInjector` allows the existing faults to be simulated without stopping tasks or changing hardware configuration.
-
-The injector uses the same bit assignments as `FaultManager`.
-
-```text
-0x00000001 — Simulated button task timeout
-0x00000002 — Simulated hardware timer inactivity
-```
+`FaultInjector` allows existing faults to be simulated without stopping tasks or changing hardware configuration.
 
 The health check combines real and injected conditions:
 
@@ -255,18 +277,7 @@ The health check combines real and injected conditions:
 Fault active = real failure OR diagnostic injection
 ```
 
-Fault injection cannot hide or override a real failure.
-
-Clearing an injection allows the active fault to recover during the next health check. The latched fault remains set until the operator issues `CLEAR FAULTS`.
-
-This supports repeatable testing of:
-
-- Fault activation
-- Multiple simultaneous faults
-- Overall unhealthy state
-- Active-fault recovery
-- Latched historical fault preservation
-- Controlled clearing of recovered fault history
+Clearing an injection allows the active fault to recover during the next health check. Latched history remains until `CLEAR FAULTS`.
 
 ## UART Telemetry
 
@@ -297,20 +308,15 @@ invalid_commands
 active_faults
 latched_faults
 injected_faults
+watchdog_refresh_enabled
+watchdog_refreshes
+watchdog_failures
 rx_dropped_bytes
 rx_overflow_lines
 rx_errors
 ```
 
-Example:
-
-```text
-uptime_ms=12000 button_presses=1 heartbeat_enabled=1 healthy=0 timer_active=1 timer_irq_count=120 rx_lines=3 valid_commands=2 invalid_commands=0 active_faults=0x00000002 latched_faults=0x00000002 injected_faults=0x00000002 rx_dropped_bytes=0 rx_overflow_lines=0 rx_errors=0
-```
-
-The physical timer may report `timer_active=1` while the timer fault bit is active when that fault is being deliberately injected.
-
-Telemetry uses a fixed-size character buffer and bounded UART transmission timeout.
+Telemetry uses a fixed-size 384-byte character buffer and bounded UART transmission timeout.
 
 No dynamic allocation is used.
 
@@ -320,66 +326,30 @@ USART2 reception is started with `HAL_UART_Receive_IT()`.
 
 One byte is received at a time.
 
-The receive-complete callback:
+The receive-complete callback forwards the byte to a fixed-capacity ring buffer and rearms reception.
 
-1. Forwards the received byte to the C++ application.
-2. Places the byte into a fixed-capacity ring buffer.
-3. Rearms interrupt-driven reception for the next byte.
-
-The interrupt does not parse commands or assemble complete lines.
-
-Those operations occur in the main application loop.
-
-## UART Ring Buffer
-
-`UartCommandReceiver` uses a single-producer, single-consumer ring buffer.
-
-The interrupt callback is the producer:
-
-```text
-UART interrupt → write byte into ring buffer
-```
-
-The application loop is the consumer:
-
-```text
-Application loop → remove and process byte
-```
-
-The buffer has fixed capacity and does not allocate memory dynamically.
-
-When the ring buffer is full, the incoming byte is dropped and `rx_dropped_bytes` increases.
+Command parsing and application decisions occur in main-loop context rather than interrupt context.
 
 ## UART Line Handling
 
-Received bytes are assembled into null-terminated command lines.
-
-Either of the following characters completes a line:
+Either of the following characters completes an input line:
 
 ```text
 Carriage return: \r
 Line feed:       \n
 ```
 
-This supports terminals that send:
+This supports terminals that send CR, LF, or CR+LF.
 
-```text
-CR
-LF
-CR+LF
-```
-
-For a `CR+LF` sequence, the first terminator completes the command and the second attempts to complete an empty line. Empty lines are ignored.
+For CR+LF, the first terminator completes the command and the second produces an empty line, which is ignored.
 
 The maximum command length is 63 characters, excluding the null terminator.
-
-A line that exceeds the fixed capacity is discarded and `rx_overflow_lines` increases.
 
 ## UART Commands
 
 Commands are uppercase and must match exactly.
 
-### Request Status
+### Status
 
 ```text
 STATUS
@@ -387,7 +357,7 @@ STATUS
 
 Immediately transmits current telemetry.
 
-### Request Fault Status
+### Fault Status
 
 ```text
 FAULTS
@@ -395,91 +365,26 @@ FAULTS
 
 Immediately transmits telemetry containing active, latched, and injected fault masks.
 
-### Enable Heartbeat
+### Heartbeat Control
 
 ```text
 HEARTBEAT ON
-```
-
-Response:
-
-```text
-OK HEARTBEAT ON
-```
-
-### Disable Heartbeat
-
-```text
 HEARTBEAT OFF
 ```
 
-Disables heartbeat behavior and immediately turns the status LED off.
-
-Response:
-
-```text
-OK HEARTBEAT OFF
-```
-
-### Inject Button Task Fault
+### Fault Injection
 
 ```text
 INJECT BUTTON FAULT
-```
-
-Enables a simulated button-task timeout.
-
-Response:
-
-```text
-OK BUTTON FAULT INJECTED
-```
-
-### Inject Hardware Timer Fault
-
-```text
 INJECT TIMER FAULT
-```
-
-Enables a simulated hardware-timer failure without stopping TIM7.
-
-Response:
-
-```text
-OK TIMER FAULT INJECTED
-```
-
-### Clear Injected Faults
-
-```text
 CLEAR INJECTED FAULTS
 ```
 
-Disables all diagnostic fault injections.
-
-Active faults are reevaluated during the next health check. Latched fault history is preserved.
-
-Response:
-
-```text
-OK INJECTED FAULTS CLEARED
-```
-
-### Clear Application Counters
+### Clear Counters
 
 ```text
 CLEAR
 ```
-
-Resets software-level application counters.
-
-Response:
-
-```text
-OK COUNTERS CLEARED
-```
-
-Hardware timer, fault, injection, and low-level UART diagnostic state are intentionally not reset.
 
 ### Clear Latched Faults
 
@@ -487,15 +392,19 @@ Hardware timer, fault, injection, and low-level UART diagnostic state are intent
 CLEAR FAULTS
 ```
 
-Clears historical faults that are no longer active.
+### Watchdog Reset Test
 
-A currently active fault remains latched.
+```text
+WATCHDOG TEST
+```
 
 Response:
 
 ```text
-OK FAULTS CLEARED
+OK WATCHDOG RESET EXPECTED
 ```
+
+The application stops refreshing the independent watchdog. The MCU resets after the watchdog timeout, and normal watchdog servicing resumes after startup.
 
 ### Invalid Commands
 
@@ -507,25 +416,15 @@ ERROR INVALID COMMAND
 
 Command matching is case-sensitive.
 
-## Health Monitoring
-
-The application checks:
-
-- Whether the button-sampling task ran within its expected time window
-- Whether TIM7 hardware interrupts continue occurring
-
-Each health result is combined with its corresponding diagnostic injection.
-
-The system reports healthy only when the resulting active fault mask is zero.
-
 ## Build and Run
 
 1. Open the project in STM32CubeIDE.
-2. Generate or update peripheral configuration through the project `.ioc` file.
-3. Refresh and build the project.
-4. Connect the NUCLEO board through the ST-LINK USB connector.
-5. Program the board using the STM32CubeIDE Run or Debug configuration.
-6. Open the ST-LINK virtual COM port in a serial terminal using 115200 8-N-1 with no flow control.
+2. Configure peripherals through the project `.ioc` file.
+3. Generate code from STM32CubeMX.
+4. Refresh and build the project.
+5. Connect the NUCLEO board through the ST-LINK USB connector.
+6. Program the board using the STM32CubeIDE Run or Debug configuration.
+7. Open the ST-LINK virtual COM port at 115200 8-N-1 with no flow control.
 
 Only one program can open the COM port at a time.
 
@@ -539,8 +438,9 @@ Only one program can open the COM port at a time.
 - Use bounded blocking operations
 - Keep hardware-specific dependencies near the application boundary
 - Represent commands and faults with strongly typed enumerations
-- Represent multiple faults efficiently with bit masks
 - Preserve intermittent failures with latched fault history
 - Keep test injection separate from production fault state
 - Use the same health-evaluation path for real and simulated failures
-- Track failures and overflow conditions rather than silently ignoring them
+- Refresh the watchdog only after application-loop progress
+- Allow hardware recovery from complete firmware stalls
+- Track failures rather than silently ignoring them

@@ -24,6 +24,9 @@ public:
         std::uint32_t activeFaultMask,
         std::uint32_t latchedFaultMask,
         std::uint32_t injectedFaultMask,
+        bool watchdogRefreshEnabled,
+        std::uint32_t watchdogRefreshCount,
+        std::uint32_t watchdogFailureCount,
         std::uint32_t droppedByteCount,
         std::uint32_t overflowLineCount,
         std::uint32_t receiveErrorCount);
@@ -34,7 +37,7 @@ public:
     [[nodiscard]] std::uint32_t failureCount() const;
 
 private:
-    static constexpr std::size_t BufferSize = 256U;
+    static constexpr std::size_t BufferSize = 384U;
     static constexpr std::uint32_t TransmitTimeoutMs = 50U;
 
     UART_HandleTypeDef* uart_;

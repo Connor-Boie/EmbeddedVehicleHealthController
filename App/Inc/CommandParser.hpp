@@ -9,6 +9,7 @@ enum class CommandType
     HeartbeatOff,
     InjectButtonFault,
     InjectTimerFault,
+    WatchdogTest,
     ClearCounters,
     ClearFaults,
     ClearInjectedFaults,

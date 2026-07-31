@@ -20,6 +20,9 @@ bool UartTelemetry::sendStatus(
     std::uint32_t activeFaultMask,
     std::uint32_t latchedFaultMask,
     std::uint32_t injectedFaultMask,
+    bool watchdogRefreshEnabled,
+    std::uint32_t watchdogRefreshCount,
+    std::uint32_t watchdogFailureCount,
     std::uint32_t droppedByteCount,
     std::uint32_t overflowLineCount,
     std::uint32_t receiveErrorCount)
@@ -39,6 +42,9 @@ bool UartTelemetry::sendStatus(
         "active_faults=0x%08lX "
         "latched_faults=0x%08lX "
         "injected_faults=0x%08lX "
+        "watchdog_refresh_enabled=%u "
+        "watchdog_refreshes=%lu "
+        "watchdog_failures=%lu "
         "rx_dropped_bytes=%lu "
         "rx_overflow_lines=%lu "
         "rx_errors=%lu\r\n",
@@ -54,6 +60,9 @@ bool UartTelemetry::sendStatus(
         static_cast<unsigned long>(activeFaultMask),
         static_cast<unsigned long>(latchedFaultMask),
         static_cast<unsigned long>(injectedFaultMask),
+        watchdogRefreshEnabled ? 1U : 0U,
+        static_cast<unsigned long>(watchdogRefreshCount),
+        static_cast<unsigned long>(watchdogFailureCount),
         static_cast<unsigned long>(droppedByteCount),
         static_cast<unsigned long>(overflowLineCount),
         static_cast<unsigned long>(receiveErrorCount));

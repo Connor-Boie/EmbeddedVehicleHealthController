@@ -4,6 +4,7 @@
 
 extern "C"
 {
+extern IWDG_HandleTypeDef hiwdg;
 extern UART_HandleTypeDef huart2;
 }
 
@@ -14,6 +15,7 @@ constexpr std::uint32_t ButtonSamplePeriodMs = 5U;
 constexpr std::uint32_t HeartbeatPeriodMs = 500U;
 constexpr std::uint32_t HealthCheckPeriodMs = 1000U;
 constexpr std::uint32_t TelemetryPeriodMs = 1000U;
+constexpr std::uint32_t WatchdogRefreshPeriodMs = 500U;
 
 constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
 }
@@ -25,10 +27,12 @@ Application::Application()
       faultManager_{},
       uartReceiver_{},
       telemetry_{&huart2},
+      watchdog_{&hiwdg},
       buttonSampleTimer_{ButtonSamplePeriodMs},
       heartbeatTimer_{HeartbeatPeriodMs},
       healthCheckTimer_{HealthCheckPeriodMs},
-      telemetryTimer_{TelemetryPeriodMs}
+      telemetryTimer_{TelemetryPeriodMs},
+      watchdogRefreshTimer_{WatchdogRefreshPeriodMs}
 {
 }
 
@@ -51,6 +55,7 @@ void Application::initialize()
     heartbeatEnabled_ = true;
     systemHealthy_ = true;
     hardwareTimerActive_ = false;
+    watchdogRefreshEnabled_ = true;
 
     const std::uint32_t currentTimeMs = HAL_GetTick();
     const bool initialPressed = readUserButtonPressed();
@@ -63,6 +68,9 @@ void Application::initialize()
     heartbeatTimer_.initialize(currentTimeMs);
     healthCheckTimer_.initialize(currentTimeMs);
     telemetryTimer_.initialize(currentTimeMs);
+    watchdogRefreshTimer_.initialize(currentTimeMs);
+
+    refreshWatchdog();
 }
 
 void Application::run()
@@ -90,6 +98,11 @@ void Application::run()
     if (telemetryTimer_.isDue(currentTimeMs))
     {
         sendTelemetry(currentTimeMs);
+    }
+
+    if (watchdogRefreshTimer_.isDue(currentTimeMs))
+    {
+        refreshWatchdog();
     }
 }
 
@@ -173,6 +186,16 @@ std::uint32_t Application::injectedFaultMask() const
     return faultInjector_.injectedFaultMask();
 }
 
+std::uint32_t Application::watchdogRefreshCount() const
+{
+    return watchdog_.refreshCount();
+}
+
+std::uint32_t Application::watchdogFailureCount() const
+{
+    return watchdog_.failureCount();
+}
+
 bool Application::heartbeatEnabled() const
 {
     return heartbeatEnabled_;
@@ -186,6 +209,11 @@ bool Application::systemHealthy() const
 bool Application::hardwareTimerActive() const
 {
     return hardwareTimerActive_;
+}
+
+bool Application::watchdogRefreshEnabled() const
+{
+    return watchdogRefreshEnabled_;
 }
 
 void Application::processButton(std::uint32_t currentTimeMs)
@@ -298,6 +326,20 @@ void Application::handleCommand(
                     "OK TIMER FAULT INJECTED");
 
             static_cast<void>(sent);
+            break;
+        }
+
+        case CommandType::WatchdogTest:
+        {
+            ++validCommandCount_;
+
+            const bool sent =
+                telemetry_.sendText(
+                    "OK WATCHDOG RESET EXPECTED");
+
+            static_cast<void>(sent);
+
+            watchdogRefreshEnabled_ = false;
             break;
         }
 
@@ -430,6 +472,18 @@ void Application::processTimerEvents()
         observedInterruptCount;
 }
 
+void Application::refreshWatchdog()
+{
+    if (!watchdogRefreshEnabled_)
+    {
+        return;
+    }
+
+    const bool refreshed = watchdog_.refresh();
+
+    static_cast<void>(refreshed);
+}
+
 void Application::sendTelemetry(std::uint32_t currentTimeMs)
 {
     const bool sent = telemetry_.sendStatus(
@@ -445,6 +499,9 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
         faultManager_.activeFaultMask(),
         faultManager_.latchedFaultMask(),
         faultInjector_.injectedFaultMask(),
+        watchdogRefreshEnabled_,
+        watchdog_.refreshCount(),
+        watchdog_.failureCount(),
         uartReceiver_.droppedByteCount(),
         uartReceiver_.overflowLineCount(),
         uartReceiver_.receiveErrorCount());

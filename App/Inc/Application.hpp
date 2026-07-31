@@ -9,6 +9,7 @@
 #include "PeriodicTimer.hpp"
 #include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
+#include "Watchdog.hpp"
 
 #include <cstdint>
 
@@ -42,9 +43,13 @@ public:
     [[nodiscard]] std::uint32_t latchedFaultMask() const;
     [[nodiscard]] std::uint32_t injectedFaultMask() const;
 
+    [[nodiscard]] std::uint32_t watchdogRefreshCount() const;
+    [[nodiscard]] std::uint32_t watchdogFailureCount() const;
+
     [[nodiscard]] bool heartbeatEnabled() const;
     [[nodiscard]] bool systemHealthy() const;
     [[nodiscard]] bool hardwareTimerActive() const;
+    [[nodiscard]] bool watchdogRefreshEnabled() const;
 
 private:
     void processButton(std::uint32_t currentTimeMs);
@@ -57,6 +62,7 @@ private:
     void updateHeartbeat();
     void performHealthCheck(std::uint32_t currentTimeMs);
     void processTimerEvents();
+    void refreshWatchdog();
     void sendTelemetry(std::uint32_t currentTimeMs);
 
     [[nodiscard]] bool readUserButtonPressed() const;
@@ -67,11 +73,13 @@ private:
     FaultManager faultManager_;
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
+    Watchdog watchdog_;
 
     PeriodicTimer buttonSampleTimer_;
     PeriodicTimer heartbeatTimer_;
     PeriodicTimer healthCheckTimer_;
     PeriodicTimer telemetryTimer_;
+    PeriodicTimer watchdogRefreshTimer_;
 
     char receivedLine_[UartCommandReceiver::LineCapacity]{};
 
@@ -92,6 +100,7 @@ private:
     bool heartbeatEnabled_{true};
     bool systemHealthy_{true};
     bool hardwareTimerActive_{false};
+    bool watchdogRefreshEnabled_{true};
 };
 
 #endif
