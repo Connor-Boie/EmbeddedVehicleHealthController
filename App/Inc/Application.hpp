@@ -7,6 +7,7 @@
 #include "FaultInjector.hpp"
 #include "FaultManager.hpp"
 #include "PeriodicTimer.hpp"
+#include "ResetCauseDetector.hpp"
 #include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
 #include "Watchdog.hpp"
@@ -38,6 +39,9 @@ public:
     [[nodiscard]] std::uint32_t receivedLineCount() const;
     [[nodiscard]] std::uint32_t validCommandCount() const;
     [[nodiscard]] std::uint32_t invalidCommandCount() const;
+
+    [[nodiscard]] ResetCause resetCause() const;
+    [[nodiscard]] std::uint32_t resetCauseMask() const;
 
     [[nodiscard]] std::uint32_t activeFaultMask() const;
     [[nodiscard]] std::uint32_t latchedFaultMask() const;
@@ -71,6 +75,7 @@ private:
     ButtonDebouncer buttonDebouncer_;
     FaultInjector faultInjector_;
     FaultManager faultManager_;
+    ResetCauseDetector resetCauseDetector_;
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
     Watchdog watchdog_;

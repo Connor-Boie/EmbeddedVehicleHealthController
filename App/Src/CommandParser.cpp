@@ -17,6 +17,11 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::Faults;
     }
 
+    if (stringsEqual(line, "RESET CAUSE"))
+    {
+        return CommandType::ResetCause;
+    }
+
     if (stringsEqual(line, "HEARTBEAT ON"))
     {
         return CommandType::HeartbeatOn;

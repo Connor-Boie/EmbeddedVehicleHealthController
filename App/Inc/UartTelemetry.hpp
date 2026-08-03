@@ -13,6 +13,8 @@ public:
 
     [[nodiscard]] bool sendStatus(
         std::uint32_t uptimeMs,
+        const char* resetCauseName,
+        std::uint32_t resetCauseMask,
         std::uint32_t buttonPressCount,
         bool heartbeatEnabled,
         bool systemHealthy,
@@ -37,7 +39,7 @@ public:
     [[nodiscard]] std::uint32_t failureCount() const;
 
 private:
-    static constexpr std::size_t BufferSize = 384U;
+    static constexpr std::size_t BufferSize = 512U;
     static constexpr std::uint32_t TransmitTimeoutMs = 50U;
 
     UART_HandleTypeDef* uart_;

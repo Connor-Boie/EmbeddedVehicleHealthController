@@ -9,6 +9,8 @@ UartTelemetry::UartTelemetry(UART_HandleTypeDef* uart)
 
 bool UartTelemetry::sendStatus(
     std::uint32_t uptimeMs,
+    const char* resetCauseName,
+    std::uint32_t resetCauseMask,
     std::uint32_t buttonPressCount,
     bool heartbeatEnabled,
     bool systemHealthy,
@@ -27,10 +29,18 @@ bool UartTelemetry::sendStatus(
     std::uint32_t overflowLineCount,
     std::uint32_t receiveErrorCount)
 {
+    if (resetCauseName == nullptr)
+    {
+        ++failureCount_;
+        return false;
+    }
+
     const int formattedLength = std::snprintf(
         buffer_,
         BufferSize,
         "uptime_ms=%lu "
+        "reset_cause=%s "
+        "reset_cause_mask=0x%08lX "
         "button_presses=%lu "
         "heartbeat_enabled=%u "
         "healthy=%u "
@@ -49,6 +59,8 @@ bool UartTelemetry::sendStatus(
         "rx_overflow_lines=%lu "
         "rx_errors=%lu\r\n",
         static_cast<unsigned long>(uptimeMs),
+        resetCauseName,
+        static_cast<unsigned long>(resetCauseMask),
         static_cast<unsigned long>(buttonPressCount),
         heartbeatEnabled ? 1U : 0U,
         systemHealthy ? 1U : 0U,

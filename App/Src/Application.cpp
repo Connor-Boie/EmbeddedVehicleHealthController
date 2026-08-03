@@ -25,6 +25,7 @@ Application::Application()
       buttonDebouncer_{ButtonDebouncePeriodMs},
       faultInjector_{},
       faultManager_{},
+      resetCauseDetector_{},
       uartReceiver_{},
       telemetry_{&huart2},
       watchdog_{&hiwdg},
@@ -38,6 +39,8 @@ Application::Application()
 
 void Application::initialize()
 {
+    resetCauseDetector_.capture();
+
     statusLed_.turnOff();
 
     receivedLineCount_ = 0U;
@@ -171,6 +174,16 @@ std::uint32_t Application::invalidCommandCount() const
     return invalidCommandCount_;
 }
 
+ResetCause Application::resetCause() const
+{
+    return resetCauseDetector_.primaryCause();
+}
+
+std::uint32_t Application::resetCauseMask() const
+{
+    return resetCauseDetector_.causeMask();
+}
+
 std::uint32_t Application::activeFaultMask() const
 {
     return faultManager_.activeFaultMask();
@@ -268,6 +281,13 @@ void Application::handleCommand(
         }
 
         case CommandType::Faults:
+        {
+            ++validCommandCount_;
+            sendTelemetry(currentTimeMs);
+            break;
+        }
+
+        case CommandType::ResetCause:
         {
             ++validCommandCount_;
             sendTelemetry(currentTimeMs);
@@ -488,6 +508,8 @@ void Application::sendTelemetry(std::uint32_t currentTimeMs)
 {
     const bool sent = telemetry_.sendStatus(
         currentTimeMs,
+        resetCauseDetector_.primaryCauseName(),
+        resetCauseDetector_.causeMask(),
         buttonPressCount_,
         heartbeatEnabled_,
         systemHealthy_,

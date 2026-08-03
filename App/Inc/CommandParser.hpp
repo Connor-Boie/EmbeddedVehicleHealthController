@@ -5,6 +5,7 @@ enum class CommandType
 {
     Status,
     Faults,
+    ResetCause,
     HeartbeatOn,
     HeartbeatOff,
     InjectButtonFault,
