@@ -11,6 +11,14 @@ bool UartTelemetry::sendStatus(
     std::uint32_t uptimeMs,
     const char* resetCauseName,
     std::uint32_t resetCauseMask,
+    bool sensorAAvailable,
+    std::int32_t sensorATemperatureMilliCelsius,
+    std::uint32_t sensorAReadCount,
+    std::uint32_t sensorAFailureCount,
+    bool sensorBAvailable,
+    std::int32_t sensorBTemperatureMilliCelsius,
+    std::uint32_t sensorBReadCount,
+    std::uint32_t sensorBFailureCount,
     std::uint32_t buttonPressCount,
     bool heartbeatEnabled,
     bool systemHealthy,
@@ -41,6 +49,14 @@ bool UartTelemetry::sendStatus(
         "uptime_ms=%lu "
         "reset_cause=%s "
         "reset_cause_mask=0x%08lX "
+        "temp_a_available=%u "
+        "temp_a_mC=%ld "
+        "temp_a_reads=%lu "
+        "temp_a_failures=%lu "
+        "temp_b_available=%u "
+        "temp_b_mC=%ld "
+        "temp_b_reads=%lu "
+        "temp_b_failures=%lu "
         "button_presses=%lu "
         "heartbeat_enabled=%u "
         "healthy=%u "
@@ -61,36 +77,67 @@ bool UartTelemetry::sendStatus(
         static_cast<unsigned long>(uptimeMs),
         resetCauseName,
         static_cast<unsigned long>(resetCauseMask),
-        static_cast<unsigned long>(buttonPressCount),
+        sensorAAvailable ? 1U : 0U,
+        static_cast<long>(
+            sensorATemperatureMilliCelsius),
+        static_cast<unsigned long>(
+            sensorAReadCount),
+        static_cast<unsigned long>(
+            sensorAFailureCount),
+        sensorBAvailable ? 1U : 0U,
+        static_cast<long>(
+            sensorBTemperatureMilliCelsius),
+        static_cast<unsigned long>(
+            sensorBReadCount),
+        static_cast<unsigned long>(
+            sensorBFailureCount),
+        static_cast<unsigned long>(
+            buttonPressCount),
         heartbeatEnabled ? 1U : 0U,
         systemHealthy ? 1U : 0U,
         hardwareTimerActive ? 1U : 0U,
-        static_cast<unsigned long>(timerInterruptCount),
-        static_cast<unsigned long>(receivedLineCount),
-        static_cast<unsigned long>(validCommandCount),
-        static_cast<unsigned long>(invalidCommandCount),
-        static_cast<unsigned long>(activeFaultMask),
-        static_cast<unsigned long>(latchedFaultMask),
-        static_cast<unsigned long>(injectedFaultMask),
+        static_cast<unsigned long>(
+            timerInterruptCount),
+        static_cast<unsigned long>(
+            receivedLineCount),
+        static_cast<unsigned long>(
+            validCommandCount),
+        static_cast<unsigned long>(
+            invalidCommandCount),
+        static_cast<unsigned long>(
+            activeFaultMask),
+        static_cast<unsigned long>(
+            latchedFaultMask),
+        static_cast<unsigned long>(
+            injectedFaultMask),
         watchdogRefreshEnabled ? 1U : 0U,
-        static_cast<unsigned long>(watchdogRefreshCount),
-        static_cast<unsigned long>(watchdogFailureCount),
-        static_cast<unsigned long>(droppedByteCount),
-        static_cast<unsigned long>(overflowLineCount),
-        static_cast<unsigned long>(receiveErrorCount));
+        static_cast<unsigned long>(
+            watchdogRefreshCount),
+        static_cast<unsigned long>(
+            watchdogFailureCount),
+        static_cast<unsigned long>(
+            droppedByteCount),
+        static_cast<unsigned long>(
+            overflowLineCount),
+        static_cast<unsigned long>(
+            receiveErrorCount));
 
     if ((formattedLength < 0) ||
-        (static_cast<std::size_t>(formattedLength) >= BufferSize))
+        (static_cast<std::size_t>(
+            formattedLength) >= BufferSize))
     {
         ++failureCount_;
         return false;
     }
 
-    const HAL_StatusTypeDef transmitStatus = HAL_UART_Transmit(
-        uart_,
-        reinterpret_cast<std::uint8_t*>(buffer_),
-        static_cast<std::uint16_t>(formattedLength),
-        TransmitTimeoutMs);
+    const HAL_StatusTypeDef transmitStatus =
+        HAL_UART_Transmit(
+            uart_,
+            reinterpret_cast<std::uint8_t*>(
+                buffer_),
+            static_cast<std::uint16_t>(
+                formattedLength),
+            TransmitTimeoutMs);
 
     if (transmitStatus != HAL_OK)
     {
@@ -117,17 +164,21 @@ bool UartTelemetry::sendText(const char* text)
         text);
 
     if ((formattedLength < 0) ||
-        (static_cast<std::size_t>(formattedLength) >= BufferSize))
+        (static_cast<std::size_t>(
+            formattedLength) >= BufferSize))
     {
         ++failureCount_;
         return false;
     }
 
-    const HAL_StatusTypeDef transmitStatus = HAL_UART_Transmit(
-        uart_,
-        reinterpret_cast<std::uint8_t*>(buffer_),
-        static_cast<std::uint16_t>(formattedLength),
-        TransmitTimeoutMs);
+    const HAL_StatusTypeDef transmitStatus =
+        HAL_UART_Transmit(
+            uart_,
+            reinterpret_cast<std::uint8_t*>(
+                buffer_),
+            static_cast<std::uint16_t>(
+                formattedLength),
+            TransmitTimeoutMs);
 
     if (transmitStatus != HAL_OK)
     {

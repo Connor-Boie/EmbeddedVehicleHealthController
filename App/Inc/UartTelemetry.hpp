@@ -15,6 +15,14 @@ public:
         std::uint32_t uptimeMs,
         const char* resetCauseName,
         std::uint32_t resetCauseMask,
+        bool sensorAAvailable,
+        std::int32_t sensorATemperatureMilliCelsius,
+        std::uint32_t sensorAReadCount,
+        std::uint32_t sensorAFailureCount,
+        bool sensorBAvailable,
+        std::int32_t sensorBTemperatureMilliCelsius,
+        std::uint32_t sensorBReadCount,
+        std::uint32_t sensorBFailureCount,
         std::uint32_t buttonPressCount,
         bool heartbeatEnabled,
         bool systemHealthy,
@@ -39,7 +47,7 @@ public:
     [[nodiscard]] std::uint32_t failureCount() const;
 
 private:
-    static constexpr std::size_t BufferSize = 512U;
+    static constexpr std::size_t BufferSize = 768U;
     static constexpr std::uint32_t TransmitTimeoutMs = 50U;
 
     UART_HandleTypeDef* uart_;

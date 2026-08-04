@@ -6,6 +6,7 @@ enum class CommandType
     Status,
     Faults,
     ResetCause,
+    Temperatures,
     HeartbeatOn,
     HeartbeatOff,
     InjectButtonFault,

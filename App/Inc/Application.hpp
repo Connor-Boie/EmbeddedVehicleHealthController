@@ -6,6 +6,7 @@
 #include "DigitalOutput.hpp"
 #include "FaultInjector.hpp"
 #include "FaultManager.hpp"
+#include "Mcp9808.hpp"
 #include "PeriodicTimer.hpp"
 #include "ResetCauseDetector.hpp"
 #include "UartCommandReceiver.hpp"
@@ -43,6 +44,14 @@ public:
     [[nodiscard]] ResetCause resetCause() const;
     [[nodiscard]] std::uint32_t resetCauseMask() const;
 
+    [[nodiscard]] std::int32_t
+        sensorATemperatureMilliCelsius() const;
+    [[nodiscard]] std::int32_t
+        sensorBTemperatureMilliCelsius() const;
+
+    [[nodiscard]] bool sensorAAvailable() const;
+    [[nodiscard]] bool sensorBAvailable() const;
+
     [[nodiscard]] std::uint32_t activeFaultMask() const;
     [[nodiscard]] std::uint32_t latchedFaultMask() const;
     [[nodiscard]] std::uint32_t injectedFaultMask() const;
@@ -57,10 +66,13 @@ public:
 
 private:
     void processButton(std::uint32_t currentTimeMs);
+    void processTemperatures();
     void processUartReceive(std::uint32_t currentTimeMs);
+
     void handleCommand(
         CommandType command,
         std::uint32_t currentTimeMs);
+
     void clearApplicationCounters();
 
     void updateHeartbeat();
@@ -76,6 +88,10 @@ private:
     FaultInjector faultInjector_;
     FaultManager faultManager_;
     ResetCauseDetector resetCauseDetector_;
+
+    Mcp9808 temperatureSensorA_;
+    Mcp9808 temperatureSensorB_;
+
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
     Watchdog watchdog_;
@@ -83,10 +99,12 @@ private:
     PeriodicTimer buttonSampleTimer_;
     PeriodicTimer heartbeatTimer_;
     PeriodicTimer healthCheckTimer_;
+    PeriodicTimer temperatureSampleTimer_;
     PeriodicTimer telemetryTimer_;
     PeriodicTimer watchdogRefreshTimer_;
 
-    char receivedLine_[UartCommandReceiver::LineCapacity]{};
+    char receivedLine_[
+        UartCommandReceiver::LineCapacity]{};
 
     std::uint32_t receivedLineCount_{0U};
     std::uint32_t validCommandCount_{0U};
