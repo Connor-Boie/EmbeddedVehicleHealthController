@@ -6,13 +6,20 @@
 enum class Fault : std::uint32_t
 {
     ButtonTaskTimeout = 1UL << 0U,
-    HardwareTimerInactive = 1UL << 1U
+    HardwareTimerInactive = 1UL << 1U,
+    TemperatureSensorAUnavailable = 1UL << 2U,
+    TemperatureSensorBUnavailable = 1UL << 3U,
+    TemperatureDisagreement = 1UL << 4U,
+    Overtemperature = 1UL << 5U
 };
 
 class FaultManager
 {
 public:
-    void setFault(Fault fault, bool active);
+    void setFault(
+        Fault fault,
+        bool active);
+
     void clearLatchedFaults();
 
     [[nodiscard]] bool hasActiveFaults() const;

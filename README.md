@@ -25,6 +25,13 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Dual MCP9808 temperature acquisition over I²C
 - Independent temperature-sensor availability tracking
 - Independent sensor read and communication-failure counters
+- Dual-channel temperature-health monitoring
+- Redundant temperature averaging when both sensors agree
+- Degraded single-sensor operation after one channel failure
+- Sensor disagreement detection
+- Overtemperature monitoring
+- Temperature communication faults integrated with `FaultManager`
+- Active and latched temperature fault reporting
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
@@ -36,11 +43,6 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 
 ## Planned Features
 
-- MCP9808 communication faults integrated with `FaultManager`
-- Redundant temperature-channel selection
-- Degraded operation when only one temperature sensor is available
-- Temperature disagreement detection
-- Overtemperature fault detection
 - Temperature and sensor fault injection
 - SPI flash storage for persistent diagnostic event records
 - Persistent reset, fault, and temperature-event history
@@ -128,6 +130,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── Mcp9808.hpp
 │   │   ├── PeriodicTimer.hpp
 │   │   ├── ResetCauseDetector.hpp
+│   │   ├── TemperatureHealthMonitor.hpp
 │   │   ├── UartCommandReceiver.hpp
 │   │   ├── UartTelemetry.hpp
 │   │   ├── Watchdog.hpp
@@ -142,6 +145,7 @@ EmbeddedVehicleHealthController/
 │       ├── Mcp9808.cpp
 │       ├── PeriodicTimer.cpp
 │       ├── ResetCauseDetector.cpp
+│       ├── TemperatureHealthMonitor.cpp
 │       ├── UartCommandReceiver.cpp
 │       ├── UartTelemetry.cpp
 │       ├── Watchdog.cpp
@@ -178,6 +182,7 @@ C++ Application object
             ├── ResetCauseDetector
             ├── Mcp9808 Sensor A
             ├── Mcp9808 Sensor B
+            ├── TemperatureHealthMonitor
             ├── UartCommandReceiver
             ├── CommandParser
             ├── UartTelemetry
@@ -226,7 +231,7 @@ Watchdog refresh:    500 ms
 
 Each call to `Application::run()` checks which tasks are due and executes them cooperatively.
 
-The temperature task runs before telemetry when both timers expire during the same loop iteration. This allows the telemetry message to contain the newest available measurements.
+The temperature task runs before the health-check and telemetry tasks when their timers become due during the same application-loop iteration. This allows fault evaluation and telemetry to use the newest temperature information.
 
 The watchdog refresh occurs near the end of the application-loop path. A stall earlier in the loop therefore prevents watchdog servicing.
 
@@ -328,18 +333,91 @@ Each sensor is read separately.
 
 A failure on Sensor A does not prevent an attempt to read Sensor B.
 
-This structure supports future degraded operation in which the controller continues using one valid temperature channel when the other channel fails.
+This allows the health controller to continue operating in a degraded single-sensor mode.
 
-### Current Limitation
+## Temperature Health Monitoring
 
-The current version acquires and reports both measurements but does not yet determine:
+`TemperatureHealthMonitor` interprets the raw state of both MCP9808 channels.
 
-- Whether one sensor is inaccurate
-- Whether the channels disagree beyond an allowed threshold
-- Which valid channel should be selected as the system temperature
-- Whether a temperature is above an overtemperature threshold
+It determines:
 
-Those health-monitoring decisions are planned for a later feature.
+- Whether Sensor A is available
+- Whether Sensor B is available
+- Whether the measurements agree
+- Whether a trusted system temperature can be selected
+- Whether operation is redundant or degraded
+- Whether either valid sensor reports an overtemperature condition
+
+### Operating Modes
+
+The controller reports one of five temperature modes:
+
+```text
+REDUNDANT
+DEGRADED_A
+DEGRADED_B
+DISAGREEMENT
+UNAVAILABLE
+```
+
+### REDUNDANT
+
+Both sensors are available and their difference does not exceed the configured disagreement threshold.
+
+The selected system temperature is the midpoint of Sensor A and Sensor B.
+
+Example:
+
+```text
+Sensor A: 24.500°C
+Sensor B: 25.000°C
+Selected: 24.750°C
+```
+
+### DEGRADED_A
+
+Only Sensor A is available.
+
+Sensor A becomes the selected temperature source.
+
+The system has a sensor fault but continues producing valid temperature information.
+
+### DEGRADED_B
+
+Only Sensor B is available.
+
+Sensor B becomes the selected temperature source.
+
+The system has a sensor fault but continues producing valid temperature information.
+
+### DISAGREEMENT
+
+Both sensors communicate, but their readings differ by more than the allowed threshold.
+
+The raw measurements continue to be reported, but the controller does not declare either reading to be the trusted system temperature.
+
+With only two redundant channels, disagreement identifies that the measurements are inconsistent but cannot determine which individual sensor is incorrect.
+
+### UNAVAILABLE
+
+Neither sensor is available.
+
+No valid selected temperature is produced.
+
+The rest of the controller continues running so diagnostics, UART communication, hardware timer monitoring, and watchdog recovery remain operational.
+
+## Temperature Thresholds
+
+Current prototype values:
+
+```text
+Sensor disagreement threshold: 2.000°C
+Overtemperature threshold:    60.000°C
+```
+
+These values are application-defined demonstration thresholds.
+
+They are not intended to represent validated production vehicle or battery safety limits.
 
 ## Independent Watchdog
 
@@ -438,14 +516,69 @@ Its bit remains set after recovery, preserving evidence of intermittent failures
 
 `CLEAR FAULTS` clears resolved historical faults. A currently active fault remains latched.
 
-### Current Fault Bits
+### Fault Bits
 
 ```text
 Bit 0 — 0x00000001 — Button task timeout
 Bit 1 — 0x00000002 — Hardware timer inactive
+Bit 2 — 0x00000004 — Temperature Sensor A unavailable
+Bit 3 — 0x00000008 — Temperature Sensor B unavailable
+Bit 4 — 0x00000010 — Temperature sensor disagreement
+Bit 5 — 0x00000020 — Overtemperature
 ```
 
-Temperature-sensor fault bits are not yet implemented.
+### Degraded Operation
+
+A temperature-sensor communication failure sets an active system fault.
+
+For example, if Sensor B fails:
+
+```text
+active_faults includes 0x00000008
+healthy=0
+```
+
+However, if Sensor A remains available:
+
+```text
+temp_mode=DEGRADED_A
+temp_selected_valid=1
+```
+
+This distinction allows the controller to indicate that a fault exists while continuing to provide usable temperature data.
+
+### Sensor Disagreement
+
+When both sensors are available but differ by more than 2°C:
+
+```text
+temp_mode=DISAGREEMENT
+temp_selected_valid=0
+```
+
+The disagreement fault becomes active:
+
+```text
+0x00000010
+```
+
+The raw temperatures remain available for diagnostics.
+
+### Overtemperature
+
+If either available sensor reports a temperature at or above the prototype threshold:
+
+```text
+60000 m°C
+```
+
+the overtemperature fault becomes active:
+
+```text
+0x00000020
+```
+
+The overtemperature threshold is a demonstration value rather than a production vehicle safety specification.
 
 ## Diagnostic Fault Injection
 
@@ -463,6 +596,8 @@ Current injectable faults:
 Button task timeout
 Hardware timer inactive
 ```
+
+Temperature fault injection is planned for future work.
 
 ## UART Telemetry
 
@@ -495,6 +630,11 @@ temp_b_mC
 temp_b_reads
 temp_b_failures
 
+temp_mode
+temp_selected_valid
+temp_selected_mC
+temp_disagreement_mC
+
 button_presses
 heartbeat_enabled
 healthy
@@ -518,31 +658,49 @@ rx_overflow_lines
 rx_errors
 ```
 
-Example temperature fields:
+### Normal Redundant Example
 
 ```text
 temp_a_available=1
 temp_a_mC=24750
-temp_a_reads=12
-temp_a_failures=0
+temp_b_available=1
+temp_b_mC=24812
+temp_mode=REDUNDANT
+temp_selected_valid=1
+temp_selected_mC=24781
+temp_disagreement_mC=62
 ```
 
 This represents:
 
 ```text
-Sensor A available:   yes
-Temperature:          24.750°C
-Successful reads:     12
-Communication errors: 0
+Sensor A:             24.750°C
+Sensor B:             24.812°C
+Difference:            0.062°C
+Selected temperature: 24.781°C
 ```
 
-A sensor with:
+### Degraded Example
 
 ```text
+temp_a_available=1
 temp_b_available=0
+temp_mode=DEGRADED_A
+temp_selected_valid=1
 ```
 
-should not have its stored temperature treated as a current valid measurement.
+The selected temperature is Sensor A's most recent valid reading.
+
+### Disagreement Example
+
+```text
+temp_a_available=1
+temp_b_available=1
+temp_mode=DISAGREEMENT
+temp_selected_valid=0
+```
+
+Both raw values remain visible, but no trusted system temperature is selected.
 
 Telemetry uses a fixed-size 768-byte character buffer and a bounded UART timeout.
 
@@ -607,7 +765,15 @@ Immediately transmits telemetry containing the reset-cause name and mask.
 TEMPERATURES
 ```
 
-Immediately transmits telemetry containing both MCP9808 temperature channels, availability states, read counters, and failure counters.
+Immediately transmits telemetry containing:
+
+- Both MCP9808 readings
+- Sensor availability
+- Sensor read counters
+- Sensor failure counters
+- Temperature operating mode
+- Selected temperature
+- Sensor disagreement
 
 ### Heartbeat Control
 
@@ -650,10 +816,6 @@ Response:
 ```text
 OK COUNTERS CLEARED
 ```
-
-This clears application-owned operational counters such as command, button, heartbeat, and health-check counts.
-
-Peripheral-driver diagnostic counters may remain separate.
 
 ### Clear Latched Faults
 
@@ -699,6 +861,74 @@ ERROR INVALID COMMAND
 
 Command matching is case-sensitive.
 
+## Temperature Failure Behavior
+
+### Normal Redundant Operation
+
+```text
+Sensor A available
+Sensor B available
+Difference <= 2°C
+
+        ↓
+
+temp_mode=REDUNDANT
+temp_selected_valid=1
+```
+
+### Sensor B Failure
+
+```text
+Sensor A available
+Sensor B unavailable
+
+        ↓
+
+temp_mode=DEGRADED_A
+temp_selected_valid=1
+Temperature Sensor B fault active
+```
+
+### Sensor A Failure
+
+```text
+Sensor A unavailable
+Sensor B available
+
+        ↓
+
+temp_mode=DEGRADED_B
+temp_selected_valid=1
+Temperature Sensor A fault active
+```
+
+### Both Sensors Unavailable
+
+```text
+Sensor A unavailable
+Sensor B unavailable
+
+        ↓
+
+temp_mode=UNAVAILABLE
+temp_selected_valid=0
+Both sensor communication faults active
+```
+
+### Sensor Disagreement
+
+```text
+Sensor A available
+Sensor B available
+Difference > 2°C
+
+        ↓
+
+temp_mode=DISAGREEMENT
+temp_selected_valid=0
+Temperature disagreement fault active
+```
+
 ## Build and Run
 
 1. Open the project in STM32CubeIDE.
@@ -717,41 +947,121 @@ Command matching is case-sensitive.
 
 Only one program can open the COM port at a time.
 
-## Basic Hardware Test
+## Temperature Health Tests
 
-With both sensors connected:
+### Both Sensors Connected
 
-```text
-Sensor A address: 0x18
-Sensor B address: 0x19
-```
-
-Expected telemetry:
+Expected:
 
 ```text
 temp_a_available=1
 temp_b_available=1
+temp_mode=REDUNDANT
+temp_selected_valid=1
 ```
 
-Both read counters should increase approximately once per second.
+Assuming no unrelated failures:
 
-To test a partial hardware failure:
+```text
+active_faults=0x00000000
+healthy=1
+```
 
-1. Power off the board.
-2. Disconnect Sensor B.
-3. Power the board back on.
-4. Observe telemetry.
+### Sensor B Disconnected
 
-Expected behavior:
+Power the board off before changing wiring.
+
+Disconnect Sensor B and restart.
+
+Expected:
 
 ```text
 temp_a_available=1
 temp_b_available=0
+temp_mode=DEGRADED_A
+temp_selected_valid=1
 ```
 
-Sensor A should continue updating.
+Expected Sensor B fault bit:
 
-The heartbeat, UART commands, timer interrupt, telemetry, and watchdog should remain operational.
+```text
+0x00000008
+```
+
+The controller is degraded but continues providing a valid temperature.
+
+### Sensor A Disconnected
+
+Expected:
+
+```text
+temp_a_available=0
+temp_b_available=1
+temp_mode=DEGRADED_B
+temp_selected_valid=1
+```
+
+Expected Sensor A fault bit:
+
+```text
+0x00000004
+```
+
+### Both Sensors Disconnected
+
+Expected:
+
+```text
+temp_a_available=0
+temp_b_available=0
+temp_mode=UNAVAILABLE
+temp_selected_valid=0
+```
+
+Combined sensor-failure mask:
+
+```text
+0x0000000C
+```
+
+The controller should continue running UART, heartbeat, timer monitoring, and watchdog servicing.
+
+### Sensor Disagreement
+
+With both sensors connected, gently warm one sensor while keeping the other near ambient temperature.
+
+When the difference exceeds 2°C:
+
+```text
+temp_mode=DISAGREEMENT
+temp_selected_valid=0
+```
+
+Expected disagreement fault:
+
+```text
+0x00000010
+```
+
+After the sensors return to agreement, the active fault clears.
+
+The latched fault remains until:
+
+```text
+CLEAR FAULTS
+```
+
+### Overtemperature
+
+The current application threshold is:
+
+```text
+60.000°C
+```
+
+Deliberately heating the hardware to this value is not required for bench testing.
+
+A future diagnostic-injection feature can test this path without physically heating the sensor.
 
 ## Design Principles
 
@@ -767,12 +1077,15 @@ The heartbeat, UART commands, timer interrupt, telemetry, and watchdog should re
 - Use scaled integers for physical measurements
 - Use bounded blocking operations
 - Keep hardware-specific dependencies near the application boundary
-- Represent commands, faults, and reset causes with strongly typed enumerations
+- Keep raw sensor acquisition separate from system-level health decisions
+- Represent commands, faults, reset causes, and temperature modes with strongly typed enumerations
 - Keep redundant sensor channels independent
 - Attempt each sensor transaction independently
-- Preserve the last successful measurement for diagnostics
-- Mark stale measurements invalid through an explicit availability field
-- Continue operating when one optional peripheral is unavailable
+- Continue operating after a single sensor failure
+- Distinguish degraded operation from complete loss of temperature information
+- Do not select a trusted temperature when two redundant channels disagree
+- Preserve raw measurements for diagnostics even when they are not trusted
+- Preserve the last successful measurement while marking its validity separately
 - Validate sensor identity rather than relying only on an address acknowledgment
 - Preserve intermittent failures with latched fault history
 - Preserve all captured reset flags while selecting one readable primary cause

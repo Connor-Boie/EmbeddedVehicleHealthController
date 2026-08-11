@@ -37,6 +37,7 @@ Application::Application()
       temperatureSensorB_{
           &hi2c1,
           TemperatureSensorBAddress},
+      temperatureHealthMonitor_{},
       uartReceiver_{},
       telemetry_{&huart2},
       watchdog_{&hiwdg},
@@ -74,7 +75,9 @@ void Application::initialize()
     hardwareTimerActive_ = false;
     watchdogRefreshEnabled_ = true;
 
-    const std::uint32_t currentTimeMs = HAL_GetTick();
+    const std::uint32_t currentTimeMs =
+        HAL_GetTick();
+
     const bool initialPressed =
         readUserButtonPressed();
 
@@ -87,9 +90,12 @@ void Application::initialize()
     buttonSampleTimer_.initialize(currentTimeMs);
     heartbeatTimer_.initialize(currentTimeMs);
     healthCheckTimer_.initialize(currentTimeMs);
+
     temperatureSampleTimer_.initialize(
         currentTimeMs);
+
     telemetryTimer_.initialize(currentTimeMs);
+
     watchdogRefreshTimer_.initialize(
         currentTimeMs);
 
@@ -114,6 +120,14 @@ void Application::initialize()
 
         static_cast<void>(sensorBRead);
     }
+
+    temperatureHealthMonitor_.update(
+        temperatureSensorA_.available(),
+        temperatureSensorA_
+            .temperatureMilliCelsius(),
+        temperatureSensorB_.available(),
+        temperatureSensorB_
+            .temperatureMilliCelsius());
 
     refreshWatchdog();
 }
@@ -270,6 +284,26 @@ bool Application::sensorBAvailable() const
     return temperatureSensorB_.available();
 }
 
+TemperatureMode
+Application::temperatureMode() const
+{
+    return temperatureHealthMonitor_.mode();
+}
+
+bool Application::selectedTemperatureValid() const
+{
+    return temperatureHealthMonitor_
+        .selectedTemperatureValid();
+}
+
+std::int32_t
+Application::selectedTemperatureMilliCelsius()
+    const
+{
+    return temperatureHealthMonitor_
+        .selectedTemperatureMilliCelsius();
+}
+
 std::uint32_t Application::activeFaultMask() const
 {
     return faultManager_.activeFaultMask();
@@ -352,6 +386,14 @@ void Application::processTemperatures()
 
     static_cast<void>(sensorARead);
     static_cast<void>(sensorBRead);
+
+    temperatureHealthMonitor_.update(
+        temperatureSensorA_.available(),
+        temperatureSensorA_
+            .temperatureMilliCelsius(),
+        temperatureSensorB_.available(),
+        temperatureSensorB_
+            .temperatureMilliCelsius());
 }
 
 void Application::processUartReceive(
@@ -573,6 +615,26 @@ void Application::performHealthCheck(
         Fault::HardwareTimerInactive,
         hardwareTimerFaultActive);
 
+    faultManager_.setFault(
+        Fault::TemperatureSensorAUnavailable,
+        temperatureHealthMonitor_
+            .sensorAFaultActive());
+
+    faultManager_.setFault(
+        Fault::TemperatureSensorBUnavailable,
+        temperatureHealthMonitor_
+            .sensorBFaultActive());
+
+    faultManager_.setFault(
+        Fault::TemperatureDisagreement,
+        temperatureHealthMonitor_
+            .disagreementFaultActive());
+
+    faultManager_.setFault(
+        Fault::Overtemperature,
+        temperatureHealthMonitor_
+            .overtemperatureFaultActive());
+
     systemHealthy_ =
         !faultManager_.hasActiveFaults();
 
@@ -615,32 +677,47 @@ void Application::sendTelemetry(
         currentTimeMs,
         resetCauseDetector_.primaryCauseName(),
         resetCauseDetector_.causeMask(),
+
         temperatureSensorA_.available(),
         temperatureSensorA_
             .temperatureMilliCelsius(),
         temperatureSensorA_
             .successfulReadCount(),
         temperatureSensorA_.failureCount(),
+
         temperatureSensorB_.available(),
         temperatureSensorB_
             .temperatureMilliCelsius(),
         temperatureSensorB_
             .successfulReadCount(),
         temperatureSensorB_.failureCount(),
+
+        temperatureHealthMonitor_.modeName(),
+        temperatureHealthMonitor_
+            .selectedTemperatureValid(),
+        temperatureHealthMonitor_
+            .selectedTemperatureMilliCelsius(),
+        temperatureHealthMonitor_
+            .disagreementMilliCelsius(),
+
         buttonPressCount_,
         heartbeatEnabled_,
         systemHealthy_,
         hardwareTimerActive_,
         timerInterruptCount_,
+
         receivedLineCount_,
         validCommandCount_,
         invalidCommandCount_,
+
         faultManager_.activeFaultMask(),
         faultManager_.latchedFaultMask(),
         faultInjector_.injectedFaultMask(),
+
         watchdogRefreshEnabled_,
         watchdog_.refreshCount(),
         watchdog_.failureCount(),
+
         uartReceiver_.droppedByteCount(),
         uartReceiver_.overflowLineCount(),
         uartReceiver_.receiveErrorCount());

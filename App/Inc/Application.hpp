@@ -9,6 +9,7 @@
 #include "Mcp9808.hpp"
 #include "PeriodicTimer.hpp"
 #include "ResetCauseDetector.hpp"
+#include "TemperatureHealthMonitor.hpp"
 #include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
 #include "Watchdog.hpp"
@@ -46,11 +47,20 @@ public:
 
     [[nodiscard]] std::int32_t
         sensorATemperatureMilliCelsius() const;
+
     [[nodiscard]] std::int32_t
         sensorBTemperatureMilliCelsius() const;
 
     [[nodiscard]] bool sensorAAvailable() const;
     [[nodiscard]] bool sensorBAvailable() const;
+
+    [[nodiscard]] TemperatureMode temperatureMode() const;
+
+    [[nodiscard]] bool
+        selectedTemperatureValid() const;
+
+    [[nodiscard]] std::int32_t
+        selectedTemperatureMilliCelsius() const;
 
     [[nodiscard]] std::uint32_t activeFaultMask() const;
     [[nodiscard]] std::uint32_t latchedFaultMask() const;
@@ -91,6 +101,8 @@ private:
 
     Mcp9808 temperatureSensorA_;
     Mcp9808 temperatureSensorB_;
+
+    TemperatureHealthMonitor temperatureHealthMonitor_;
 
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
