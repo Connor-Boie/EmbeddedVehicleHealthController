@@ -7,8 +7,8 @@ enum class CommandType
     Faults,
     ResetCause,
     Temperatures,
-    HeartbeatOn,
-    HeartbeatOff,
+    FlashStatus,
+    FlashTest,
     InjectButtonFault,
     InjectTimerFault,
     WatchdogTest,
@@ -21,7 +21,8 @@ enum class CommandType
 class CommandParser
 {
 public:
-    [[nodiscard]] static CommandType parse(const char* line);
+    [[nodiscard]] static CommandType parse(
+        const char* line);
 
 private:
     [[nodiscard]] static bool stringsEqual(

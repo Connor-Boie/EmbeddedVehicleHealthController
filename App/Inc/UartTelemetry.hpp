@@ -9,7 +9,8 @@
 class UartTelemetry
 {
 public:
-    explicit UartTelemetry(UART_HandleTypeDef* uart);
+    explicit UartTelemetry(
+        UART_HandleTypeDef* uart);
 
     [[nodiscard]] bool sendStatus(
         std::uint32_t uptimeMs,
@@ -31,8 +32,15 @@ public:
         std::int32_t selectedTemperatureMilliCelsius,
         std::uint32_t temperatureDisagreementMilliCelsius,
 
+        bool flashAvailable,
+        std::uint32_t flashJedecId,
+        std::uint32_t flashFailureCount,
+        bool flashTestRun,
+        bool flashTestPassed,
+
         std::uint32_t buttonPressCount,
-        bool heartbeatEnabled,
+        std::uint32_t heartbeatExecutionCount,
+
         bool systemHealthy,
         bool hardwareTimerActive,
         std::uint32_t timerInterruptCount,
@@ -53,14 +61,21 @@ public:
         std::uint32_t overflowLineCount,
         std::uint32_t receiveErrorCount);
 
-    [[nodiscard]] bool sendText(const char* text);
+    [[nodiscard]] bool sendText(
+        const char* text);
 
-    [[nodiscard]] std::uint32_t messageCount() const;
-    [[nodiscard]] std::uint32_t failureCount() const;
+    [[nodiscard]] std::uint32_t
+        messageCount() const;
+
+    [[nodiscard]] std::uint32_t
+        failureCount() const;
 
 private:
-    static constexpr std::size_t BufferSize = 1024U;
-    static constexpr std::uint32_t TransmitTimeoutMs = 150U;
+    static constexpr std::size_t BufferSize =
+        1024U;
+
+    static constexpr std::uint32_t
+        TransmitTimeoutMs = 150U;
 
     UART_HandleTypeDef* uart_;
 

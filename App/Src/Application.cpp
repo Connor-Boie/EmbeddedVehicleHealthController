@@ -6,47 +6,99 @@ extern "C"
 {
 extern I2C_HandleTypeDef hi2c1;
 extern IWDG_HandleTypeDef hiwdg;
+extern SPI_HandleTypeDef hspi2;
 extern UART_HandleTypeDef huart2;
 }
 
 namespace
 {
-constexpr std::uint8_t TemperatureSensorAAddress = 0x18U;
-constexpr std::uint8_t TemperatureSensorBAddress = 0x19U;
+constexpr std::uint8_t
+    TemperatureSensorAAddress = 0x18U;
 
-constexpr std::uint32_t ButtonDebouncePeriodMs = 30U;
-constexpr std::uint32_t ButtonSamplePeriodMs = 5U;
-constexpr std::uint32_t HeartbeatPeriodMs = 500U;
-constexpr std::uint32_t HealthCheckPeriodMs = 1000U;
-constexpr std::uint32_t TemperatureSamplePeriodMs = 1000U;
-constexpr std::uint32_t TelemetryPeriodMs = 1000U;
-constexpr std::uint32_t WatchdogRefreshPeriodMs = 500U;
+constexpr std::uint8_t
+    TemperatureSensorBAddress = 0x19U;
 
-constexpr std::uint32_t ButtonTaskTimeoutMs = 50U;
+constexpr std::uint32_t
+    ButtonDebouncePeriodMs = 30U;
+
+constexpr std::uint32_t
+    ButtonSamplePeriodMs = 5U;
+
+constexpr std::uint32_t
+    HeartbeatPeriodMs = 500U;
+
+constexpr std::uint32_t
+    HealthCheckPeriodMs = 1000U;
+
+constexpr std::uint32_t
+    TemperatureSamplePeriodMs = 1000U;
+
+constexpr std::uint32_t
+    TelemetryPeriodMs = 1000U;
+
+constexpr std::uint32_t
+    WatchdogRefreshPeriodMs = 500U;
+
+constexpr std::uint32_t
+    ButtonTaskTimeoutMs = 50U;
+
+constexpr std::uint32_t
+    FlashTestSectorAddress =
+        W25q64::CapacityBytes -
+        W25q64::SectorSizeBytes;
 }
 
 Application::Application()
-    : statusLed_{LD2_GPIO_Port, LD2_Pin},
-      buttonDebouncer_{ButtonDebouncePeriodMs},
+    : statusLed_{
+          LD2_GPIO_Port,
+          LD2_Pin},
+
+      buttonDebouncer_{
+          ButtonDebouncePeriodMs},
+
       faultInjector_{},
       faultManager_{},
+
       resetCauseDetector_{},
+
       temperatureSensorA_{
           &hi2c1,
           TemperatureSensorAAddress},
+
       temperatureSensorB_{
           &hi2c1,
           TemperatureSensorBAddress},
+
       temperatureHealthMonitor_{},
+
+      flash_{
+          &hspi2,
+          FLASH_CS_GPIO_Port,
+          FLASH_CS_Pin},
+
       uartReceiver_{},
-      telemetry_{&huart2},
-      watchdog_{&hiwdg},
-      buttonSampleTimer_{ButtonSamplePeriodMs},
-      heartbeatTimer_{HeartbeatPeriodMs},
-      healthCheckTimer_{HealthCheckPeriodMs},
+
+      telemetry_{
+          &huart2},
+
+      watchdog_{
+          &hiwdg},
+
+      buttonSampleTimer_{
+          ButtonSamplePeriodMs},
+
+      heartbeatTimer_{
+          HeartbeatPeriodMs},
+
+      healthCheckTimer_{
+          HealthCheckPeriodMs},
+
       temperatureSampleTimer_{
           TemperatureSamplePeriodMs},
-      telemetryTimer_{TelemetryPeriodMs},
+
+      telemetryTimer_{
+          TelemetryPeriodMs},
+
       watchdogRefreshTimer_{
           WatchdogRefreshPeriodMs}
 {
@@ -68,12 +120,15 @@ void Application::initialize()
 
     timerInterruptCount_ = 0U;
     processedTimerEventCount_ = 0U;
+
     previousHealthCheckTimerCount_ = 0U;
 
-    heartbeatEnabled_ = true;
     systemHealthy_ = true;
     hardwareTimerActive_ = false;
     watchdogRefreshEnabled_ = true;
+
+    flashTestRun_ = false;
+    flashTestPassed_ = false;
 
     const std::uint32_t currentTimeMs =
         HAL_GetTick();
@@ -81,20 +136,27 @@ void Application::initialize()
     const bool initialPressed =
         readUserButtonPressed();
 
-    lastButtonTaskTimeMs_ = currentTimeMs;
+    lastButtonTaskTimeMs_ =
+        currentTimeMs;
 
     buttonDebouncer_.initialize(
         initialPressed,
         currentTimeMs);
 
-    buttonSampleTimer_.initialize(currentTimeMs);
-    heartbeatTimer_.initialize(currentTimeMs);
-    healthCheckTimer_.initialize(currentTimeMs);
+    buttonSampleTimer_.initialize(
+        currentTimeMs);
+
+    heartbeatTimer_.initialize(
+        currentTimeMs);
+
+    healthCheckTimer_.initialize(
+        currentTimeMs);
 
     temperatureSampleTimer_.initialize(
         currentTimeMs);
 
-    telemetryTimer_.initialize(currentTimeMs);
+    telemetryTimer_.initialize(
+        currentTimeMs);
 
     watchdogRefreshTimer_.initialize(
         currentTimeMs);
@@ -108,17 +170,21 @@ void Application::initialize()
     if (sensorAInitialized)
     {
         const bool sensorARead =
-            temperatureSensorA_.readTemperature();
+            temperatureSensorA_
+                .readTemperature();
 
-        static_cast<void>(sensorARead);
+        static_cast<void>(
+            sensorARead);
     }
 
     if (sensorBInitialized)
     {
         const bool sensorBRead =
-            temperatureSensorB_.readTemperature();
+            temperatureSensorB_
+                .readTemperature();
 
-        static_cast<void>(sensorBRead);
+        static_cast<void>(
+            sensorBRead);
     }
 
     temperatureHealthMonitor_.update(
@@ -128,6 +194,12 @@ void Application::initialize()
         temperatureSensorB_.available(),
         temperatureSensorB_
             .temperatureMilliCelsius());
+
+    const bool flashInitialized =
+        flash_.initialize();
+
+    static_cast<void>(
+        flashInitialized);
 
     refreshWatchdog();
 }
@@ -140,12 +212,15 @@ void Application::run()
     processTimerEvents();
     processUartReceive(currentTimeMs);
 
-    if (buttonSampleTimer_.isDue(currentTimeMs))
+    if (buttonSampleTimer_.isDue(
+        currentTimeMs))
     {
-        processButton(currentTimeMs);
+        processButton(
+            currentTimeMs);
     }
 
-    if (heartbeatTimer_.isDue(currentTimeMs))
+    if (heartbeatTimer_.isDue(
+        currentTimeMs))
     {
         updateHeartbeat();
     }
@@ -156,14 +231,18 @@ void Application::run()
         processTemperatures();
     }
 
-    if (healthCheckTimer_.isDue(currentTimeMs))
+    if (healthCheckTimer_.isDue(
+        currentTimeMs))
     {
-        performHealthCheck(currentTimeMs);
+        performHealthCheck(
+            currentTimeMs);
     }
 
-    if (telemetryTimer_.isDue(currentTimeMs))
+    if (telemetryTimer_.isDue(
+        currentTimeMs))
     {
-        sendTelemetry(currentTimeMs);
+        sendTelemetry(
+            currentTimeMs);
     }
 
     if (watchdogRefreshTimer_.isDue(
@@ -181,16 +260,19 @@ void Application::onTimerInterrupt()
 void Application::onUartByteReceived(
     std::uint8_t byte)
 {
-    uartReceiver_.onByteReceivedFromInterrupt(
-        byte);
+    uartReceiver_
+        .onByteReceivedFromInterrupt(
+            byte);
 }
 
 void Application::onUartReceiveError()
 {
-    uartReceiver_.onReceiveErrorFromInterrupt();
+    uartReceiver_
+        .onReceiveErrorFromInterrupt();
 }
 
-std::uint32_t Application::buttonPressCount() const
+std::uint32_t
+Application::buttonPressCount() const
 {
     return buttonPressCount_;
 }
@@ -201,7 +283,8 @@ Application::heartbeatExecutionCount() const
     return heartbeatExecutionCount_;
 }
 
-std::uint32_t Application::healthCheckCount() const
+std::uint32_t
+Application::healthCheckCount() const
 {
     return healthCheckCount_;
 }
@@ -248,14 +331,18 @@ Application::invalidCommandCount() const
     return invalidCommandCount_;
 }
 
-ResetCause Application::resetCause() const
+ResetCause
+Application::resetCause() const
 {
-    return resetCauseDetector_.primaryCause();
+    return resetCauseDetector_
+        .primaryCause();
 }
 
-std::uint32_t Application::resetCauseMask() const
+std::uint32_t
+Application::resetCauseMask() const
 {
-    return resetCauseDetector_.causeMask();
+    return resetCauseDetector_
+        .causeMask();
 }
 
 std::int32_t
@@ -276,21 +363,25 @@ Application::sensorBTemperatureMilliCelsius()
 
 bool Application::sensorAAvailable() const
 {
-    return temperatureSensorA_.available();
+    return temperatureSensorA_
+        .available();
 }
 
 bool Application::sensorBAvailable() const
 {
-    return temperatureSensorB_.available();
+    return temperatureSensorB_
+        .available();
 }
 
 TemperatureMode
 Application::temperatureMode() const
 {
-    return temperatureHealthMonitor_.mode();
+    return temperatureHealthMonitor_
+        .mode();
 }
 
-bool Application::selectedTemperatureValid() const
+bool
+Application::selectedTemperatureValid() const
 {
     return temperatureHealthMonitor_
         .selectedTemperatureValid();
@@ -304,20 +395,36 @@ Application::selectedTemperatureMilliCelsius()
         .selectedTemperatureMilliCelsius();
 }
 
-std::uint32_t Application::activeFaultMask() const
+bool Application::flashAvailable() const
 {
-    return faultManager_.activeFaultMask();
+    return flash_.available();
 }
 
-std::uint32_t Application::latchedFaultMask() const
+std::uint32_t
+Application::flashJedecId() const
 {
-    return faultManager_.latchedFaultMask();
+    return flash_.jedecId();
+}
+
+std::uint32_t
+Application::activeFaultMask() const
+{
+    return faultManager_
+        .activeFaultMask();
+}
+
+std::uint32_t
+Application::latchedFaultMask() const
+{
+    return faultManager_
+        .latchedFaultMask();
 }
 
 std::uint32_t
 Application::injectedFaultMask() const
 {
-    return faultInjector_.injectedFaultMask();
+    return faultInjector_
+        .injectedFaultMask();
 }
 
 std::uint32_t
@@ -332,22 +439,19 @@ Application::watchdogFailureCount() const
     return watchdog_.failureCount();
 }
 
-bool Application::heartbeatEnabled() const
-{
-    return heartbeatEnabled_;
-}
-
 bool Application::systemHealthy() const
 {
     return systemHealthy_;
 }
 
-bool Application::hardwareTimerActive() const
+bool
+Application::hardwareTimerActive() const
 {
     return hardwareTimerActive_;
 }
 
-bool Application::watchdogRefreshEnabled() const
+bool
+Application::watchdogRefreshEnabled() const
 {
     return watchdogRefreshEnabled_;
 }
@@ -355,7 +459,8 @@ bool Application::watchdogRefreshEnabled() const
 void Application::processButton(
     std::uint32_t currentTimeMs)
 {
-    lastButtonTaskTimeMs_ = currentTimeMs;
+    lastButtonTaskTimeMs_ =
+        currentTimeMs;
 
     const bool rawPressed =
         readUserButtonPressed();
@@ -366,26 +471,28 @@ void Application::processButton(
 
     if (buttonDebouncer_.pressedEvent())
     {
-        heartbeatEnabled_ = !heartbeatEnabled_;
         ++buttonPressCount_;
 
-        if (!heartbeatEnabled_)
-        {
-            statusLed_.turnOff();
-        }
+        sendTelemetry(
+            currentTimeMs);
     }
 }
 
 void Application::processTemperatures()
 {
     const bool sensorARead =
-        temperatureSensorA_.readTemperature();
+        temperatureSensorA_
+            .readTemperature();
 
     const bool sensorBRead =
-        temperatureSensorB_.readTemperature();
+        temperatureSensorB_
+            .readTemperature();
 
-    static_cast<void>(sensorARead);
-    static_cast<void>(sensorBRead);
+    static_cast<void>(
+        sensorARead);
+
+    static_cast<void>(
+        sensorBRead);
 
     temperatureHealthMonitor_.update(
         temperatureSensorA_.available(),
@@ -408,9 +515,12 @@ void Application::processUartReceive(
         ++receivedLineCount_;
 
         const CommandType command =
-            CommandParser::parse(receivedLine_);
+            CommandParser::parse(
+                receivedLine_);
 
-        handleCommand(command, currentTimeMs);
+        handleCommand(
+            command,
+            currentTimeMs);
     }
 }
 
@@ -424,36 +534,25 @@ void Application::handleCommand(
         case CommandType::Faults:
         case CommandType::ResetCause:
         case CommandType::Temperatures:
+        case CommandType::FlashStatus:
         {
             ++validCommandCount_;
-            sendTelemetry(currentTimeMs);
+
+            sendTelemetry(
+                currentTimeMs);
+
             break;
         }
 
-        case CommandType::HeartbeatOn:
+        case CommandType::FlashTest:
         {
             ++validCommandCount_;
-            heartbeatEnabled_ = true;
 
-            const bool sent =
-                telemetry_.sendText(
-                    "OK HEARTBEAT ON");
+            runFlashSelfTest();
 
-            static_cast<void>(sent);
-            break;
-        }
+            sendTelemetry(
+                HAL_GetTick());
 
-        case CommandType::HeartbeatOff:
-        {
-            ++validCommandCount_;
-            heartbeatEnabled_ = false;
-            statusLed_.turnOff();
-
-            const bool sent =
-                telemetry_.sendText(
-                    "OK HEARTBEAT OFF");
-
-            static_cast<void>(sent);
             break;
         }
 
@@ -468,7 +567,9 @@ void Application::handleCommand(
                 telemetry_.sendText(
                     "OK BUTTON FAULT INJECTED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
 
@@ -483,7 +584,9 @@ void Application::handleCommand(
                 telemetry_.sendText(
                     "OK TIMER FAULT INJECTED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
 
@@ -495,9 +598,12 @@ void Application::handleCommand(
                 telemetry_.sendText(
                     "OK WATCHDOG RESET EXPECTED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
 
-            watchdogRefreshEnabled_ = false;
+            watchdogRefreshEnabled_ =
+                false;
+
             break;
         }
 
@@ -509,33 +615,42 @@ void Application::handleCommand(
                 telemetry_.sendText(
                     "OK COUNTERS CLEARED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
 
         case CommandType::ClearFaults:
         {
             ++validCommandCount_;
-            faultManager_.clearLatchedFaults();
+
+            faultManager_
+                .clearLatchedFaults();
 
             const bool sent =
                 telemetry_.sendText(
                     "OK FAULTS CLEARED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
 
         case CommandType::ClearInjectedFaults:
         {
             ++validCommandCount_;
+
             faultInjector_.clearAll();
 
             const bool sent =
                 telemetry_.sendText(
                     "OK INJECTED FAULTS CLEARED");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
 
@@ -548,7 +663,9 @@ void Application::handleCommand(
                 telemetry_.sendText(
                     "ERROR INVALID COMMAND");
 
-            static_cast<void>(sent);
+            static_cast<void>(
+                sent);
+
             break;
         }
     }
@@ -567,20 +684,18 @@ void Application::clearApplicationCounters()
 
 void Application::updateHeartbeat()
 {
-    if (!heartbeatEnabled_)
-    {
-        return;
-    }
-
     statusLed_.toggle();
+
     ++heartbeatExecutionCount_;
 }
 
 void Application::performHealthCheck(
     std::uint32_t currentTimeMs)
 {
-    const std::uint32_t timeSinceButtonTaskMs =
-        currentTimeMs - lastButtonTaskTimeMs_;
+    const std::uint32_t
+        timeSinceButtonTaskMs =
+            currentTimeMs -
+            lastButtonTaskTimeMs_;
 
     const bool buttonTaskHealthy =
         timeSinceButtonTaskMs <=
@@ -667,66 +782,224 @@ void Application::refreshWatchdog()
     const bool refreshed =
         watchdog_.refresh();
 
-    static_cast<void>(refreshed);
+    static_cast<void>(
+        refreshed);
 }
 
 void Application::sendTelemetry(
     std::uint32_t currentTimeMs)
 {
-    const bool sent = telemetry_.sendStatus(
-        currentTimeMs,
-        resetCauseDetector_.primaryCauseName(),
-        resetCauseDetector_.causeMask(),
+    const bool sent =
+        telemetry_.sendStatus(
+            currentTimeMs,
 
-        temperatureSensorA_.available(),
-        temperatureSensorA_
-            .temperatureMilliCelsius(),
-        temperatureSensorA_
-            .successfulReadCount(),
-        temperatureSensorA_.failureCount(),
+            resetCauseDetector_
+                .primaryCauseName(),
 
-        temperatureSensorB_.available(),
-        temperatureSensorB_
-            .temperatureMilliCelsius(),
-        temperatureSensorB_
-            .successfulReadCount(),
-        temperatureSensorB_.failureCount(),
+            resetCauseDetector_
+                .causeMask(),
 
-        temperatureHealthMonitor_.modeName(),
-        temperatureHealthMonitor_
-            .selectedTemperatureValid(),
-        temperatureHealthMonitor_
-            .selectedTemperatureMilliCelsius(),
-        temperatureHealthMonitor_
-            .disagreementMilliCelsius(),
+            temperatureSensorA_
+                .available(),
 
-        buttonPressCount_,
-        heartbeatEnabled_,
-        systemHealthy_,
-        hardwareTimerActive_,
-        timerInterruptCount_,
+            temperatureSensorA_
+                .temperatureMilliCelsius(),
 
-        receivedLineCount_,
-        validCommandCount_,
-        invalidCommandCount_,
+            temperatureSensorA_
+                .successfulReadCount(),
 
-        faultManager_.activeFaultMask(),
-        faultManager_.latchedFaultMask(),
-        faultInjector_.injectedFaultMask(),
+            temperatureSensorA_
+                .failureCount(),
 
-        watchdogRefreshEnabled_,
-        watchdog_.refreshCount(),
-        watchdog_.failureCount(),
+            temperatureSensorB_
+                .available(),
 
-        uartReceiver_.droppedByteCount(),
-        uartReceiver_.overflowLineCount(),
-        uartReceiver_.receiveErrorCount());
+            temperatureSensorB_
+                .temperatureMilliCelsius(),
 
-    static_cast<void>(sent);
+            temperatureSensorB_
+                .successfulReadCount(),
+
+            temperatureSensorB_
+                .failureCount(),
+
+            temperatureHealthMonitor_
+                .modeName(),
+
+            temperatureHealthMonitor_
+                .selectedTemperatureValid(),
+
+            temperatureHealthMonitor_
+                .selectedTemperatureMilliCelsius(),
+
+            temperatureHealthMonitor_
+                .disagreementMilliCelsius(),
+
+            flash_.available(),
+            flash_.jedecId(),
+            flash_.failureCount(),
+            flashTestRun_,
+            flashTestPassed_,
+
+            buttonPressCount_,
+            heartbeatExecutionCount_,
+
+            systemHealthy_,
+            hardwareTimerActive_,
+            timerInterruptCount_,
+
+            receivedLineCount_,
+            validCommandCount_,
+            invalidCommandCount_,
+
+            faultManager_
+                .activeFaultMask(),
+
+            faultManager_
+                .latchedFaultMask(),
+
+            faultInjector_
+                .injectedFaultMask(),
+
+            watchdogRefreshEnabled_,
+
+            watchdog_
+                .refreshCount(),
+
+            watchdog_
+                .failureCount(),
+
+            uartReceiver_
+                .droppedByteCount(),
+
+            uartReceiver_
+                .overflowLineCount(),
+
+            uartReceiver_
+                .receiveErrorCount());
+
+    static_cast<void>(
+        sent);
+}
+
+void Application::runFlashSelfTest()
+{
+    flashTestRun_ = true;
+    flashTestPassed_ = false;
+
+    if (!flash_.available())
+    {
+        const bool initialized =
+            flash_.initialize();
+
+        if (!initialized)
+        {
+            const bool sent =
+                telemetry_.sendText(
+                    "ERROR FLASH NOT AVAILABLE");
+
+            static_cast<void>(
+                sent);
+
+            return;
+        }
+    }
+
+    constexpr std::uint8_t testPattern[]{
+        0x45U, 0x56U, 0x48U, 0x43U,
+        0x2DU, 0x46U, 0x4CU, 0x41U,
+        0x53U, 0x48U, 0x2DU, 0x54U,
+        0x45U, 0x53U, 0x54U, 0x2DU,
+        0x01U, 0x23U, 0x45U, 0x67U,
+        0x89U, 0xABU, 0xCDU, 0xEFU,
+        0x10U, 0x32U, 0x54U, 0x76U,
+        0x98U, 0xBAU, 0xDCU, 0xFEU
+    };
+
+    std::uint8_t readback[
+        sizeof(testPattern)]{};
+
+    refreshWatchdog();
+
+    if (!flash_.eraseSector(
+        FlashTestSectorAddress))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR FLASH ERASE FAILED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    refreshWatchdog();
+
+    if (!flash_.program(
+        FlashTestSectorAddress,
+        testPattern,
+        sizeof(testPattern)))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR FLASH PROGRAM FAILED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    refreshWatchdog();
+
+    if (!flash_.read(
+        FlashTestSectorAddress,
+        readback,
+        sizeof(readback)))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR FLASH READ FAILED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    for (std::size_t index = 0U;
+         index < sizeof(testPattern);
+         ++index)
+    {
+        if (readback[index] !=
+            testPattern[index])
+        {
+            const bool sent =
+                telemetry_.sendText(
+                    "ERROR FLASH VERIFY FAILED");
+
+            static_cast<void>(
+                sent);
+
+            return;
+        }
+    }
+
+    flashTestPassed_ = true;
+
+    const bool sent =
+        telemetry_.sendText(
+            "OK FLASH TEST PASSED");
+
+    static_cast<void>(
+        sent);
 }
 
 bool Application::readUserButtonPressed() const
 {
     return BSP_PB_GetState(
-        BUTTON_USER) == GPIO_PIN_RESET;
+        BUTTON_USER) ==
+        GPIO_PIN_RESET;
 }
+

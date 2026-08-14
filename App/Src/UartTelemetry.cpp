@@ -28,8 +28,15 @@ bool UartTelemetry::sendStatus(
     std::int32_t selectedTemperatureMilliCelsius,
     std::uint32_t temperatureDisagreementMilliCelsius,
 
+    bool flashAvailable,
+    std::uint32_t flashJedecId,
+    std::uint32_t flashFailureCount,
+    bool flashTestRun,
+    bool flashTestPassed,
+
     std::uint32_t buttonPressCount,
-    bool heartbeatEnabled,
+    std::uint32_t heartbeatExecutionCount,
+
     bool systemHealthy,
     bool hardwareTimerActive,
     std::uint32_t timerInterruptCount,
@@ -81,8 +88,15 @@ bool UartTelemetry::sendStatus(
             "temp_selected_mC=%ld "
             "temp_disagreement_mC=%lu "
 
+            "flash_available=%u "
+            "flash_jedec_id=0x%06lX "
+            "flash_failures=%lu "
+            "flash_test_run=%u "
+            "flash_test_passed=%u "
+
             "button_presses=%lu "
-            "heartbeat_enabled=%u "
+            "heartbeat_count=%lu "
+
             "healthy=%u "
             "timer_active=%u "
             "timer_irq_count=%lu "
@@ -143,10 +157,23 @@ bool UartTelemetry::sendStatus(
             static_cast<unsigned long>(
                 temperatureDisagreementMilliCelsius),
 
+            flashAvailable ? 1U : 0U,
+
+            static_cast<unsigned long>(
+                flashJedecId),
+
+            static_cast<unsigned long>(
+                flashFailureCount),
+
+            flashTestRun ? 1U : 0U,
+            flashTestPassed ? 1U : 0U,
+
             static_cast<unsigned long>(
                 buttonPressCount),
 
-            heartbeatEnabled ? 1U : 0U,
+            static_cast<unsigned long>(
+                heartbeatExecutionCount),
+
             systemHealthy ? 1U : 0U,
             hardwareTimerActive ? 1U : 0U,
 

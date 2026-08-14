@@ -1,6 +1,7 @@
 #include "CommandParser.hpp"
 
-CommandType CommandParser::parse(const char* line)
+CommandType CommandParser::parse(
+    const char* line)
 {
     if (line == nullptr)
     {
@@ -27,22 +28,26 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::Temperatures;
     }
 
-    if (stringsEqual(line, "HEARTBEAT ON"))
+    if (stringsEqual(line, "FLASH STATUS"))
     {
-        return CommandType::HeartbeatOn;
+        return CommandType::FlashStatus;
     }
 
-    if (stringsEqual(line, "HEARTBEAT OFF"))
+    if (stringsEqual(line, "FLASH TEST"))
     {
-        return CommandType::HeartbeatOff;
+        return CommandType::FlashTest;
     }
 
-    if (stringsEqual(line, "INJECT BUTTON FAULT"))
+    if (stringsEqual(
+        line,
+        "INJECT BUTTON FAULT"))
     {
         return CommandType::InjectButtonFault;
     }
 
-    if (stringsEqual(line, "INJECT TIMER FAULT"))
+    if (stringsEqual(
+        line,
+        "INJECT TIMER FAULT"))
     {
         return CommandType::InjectTimerFault;
     }
@@ -62,7 +67,9 @@ CommandType CommandParser::parse(const char* line)
         return CommandType::ClearFaults;
     }
 
-    if (stringsEqual(line, "CLEAR INJECTED FAULTS"))
+    if (stringsEqual(
+        line,
+        "CLEAR INJECTED FAULTS"))
     {
         return CommandType::ClearInjectedFaults;
     }
@@ -74,7 +81,8 @@ bool CommandParser::stringsEqual(
     const char* first,
     const char* second)
 {
-    if ((first == nullptr) || (second == nullptr))
+    if ((first == nullptr) ||
+        (second == nullptr))
     {
         return false;
     }

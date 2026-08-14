@@ -1,6 +1,6 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and transmits system diagnostics through UART.
+A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, provides external SPI flash storage, processes serial commands, and transmits system diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate application-owned C++ layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -9,9 +9,10 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 ## Current Features
 
 - C++ application layer running above STM32 HAL initialization
-- GPIO status LED control through a reusable `DigitalOutput` abstraction
+- GPIO status heartbeat through a reusable `DigitalOutput` abstraction
+- Automatic periodic system heartbeat
 - Debounced USER button input
-- Button-controlled heartbeat enable and disable behavior
+- USER button manual diagnostic/status snapshot
 - Cooperative periodic task scheduling
 - TIM7 hardware timer interrupts
 - Main-loop processing of interrupt-generated timer events
@@ -31,27 +32,44 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Sensor disagreement detection
 - Overtemperature monitoring
 - Temperature communication faults integrated with `FaultManager`
-- Active and latched temperature fault reporting
+- External W25Q64 SPI NOR flash interface
+- JEDEC flash identification
+- SPI flash reads
+- Page-aware SPI flash programming
+- 4-KiB sector erase support
+- Flash BUSY-status polling
+- Destructive reserved-sector flash self-test
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
 - Fixed-capacity UART line assembly without dynamic allocation
 - UART command parsing and validation
 - Immediate command acknowledgments and error responses
-- Runtime counters for commands, watchdog refreshes, sensor reads, and communication failures
+- Runtime diagnostic counters
 - UART overflow, dropped-byte, and receive-error diagnostics
 
 ## Planned Features
 
-- Temperature and sensor fault injection
-- SPI flash storage for persistent diagnostic event records
-- Persistent reset, fault, and temperature-event history
-- CAN communication for live system-health and temperature messages
+- Persistent diagnostic event records in SPI flash
+- Persistent reset, fault, temperature, and CAN event history
+- CAN communication between two STM32 nodes
+- Second NUCLEO-F446RE thermal/actuator-control node
+- Bidirectional CAN heartbeat supervision
+- CAN communication-loss detection
+- Board 2 thermal-control state machine
+- PWM cooling output
+- External LED warning indication
+- Buzzer warning patterns
+- Board 2 safe-state behavior
+- Remote actuator/status feedback
+- Remote-node fault propagation
 - Host-side unit tests
 - Automated build and test integration
 - Final portfolio documentation and system diagrams
 
 ## Hardware
+
+### Board 1
 
 - STM32 NUCLEO-F446RE
 - STM32F446RE microcontroller
@@ -59,9 +77,19 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - On-board USER push button
 - ST-LINK USB virtual COM port
 - Two MCP9808 temperature-sensor breakout boards
+- W25Q64 64-Mbit / 8-MiB SPI NOR flash module
 - Breadboard
 - Male header pins
 - Jumper wires
+
+### Planned Board 2
+
+- Second STM32 NUCLEO-F446RE
+- CAN transceiver
+- External warning LED or RGB LED
+- Buzzer
+- PWM-controlled cooling fan or simulated actuator
+- USER button for actuator self-test or warning acknowledgement
 
 ## Temperature-Sensor Configuration
 
@@ -75,8 +103,6 @@ GND                GND            GND
 D15 / SCL / PB8    SCL            SCL
 D14 / SDA / PB9    SDA            SDA
 ```
-
-The sensors use different address-pin configurations.
 
 ### Sensor A
 
@@ -98,14 +124,223 @@ A2 → GND
 7-bit I²C address: 0x19
 ```
 
-The application stores the normal 7-bit addresses. The MCP9808 driver shifts each address left by one when passing it to STM32 HAL I²C functions.
+The application stores normal 7-bit addresses. The MCP9808 driver shifts the address left by one when passing it to STM32 HAL I²C functions.
 
 ```text
 Sensor A HAL address: 0x18 << 1 = 0x30
 Sensor B HAL address: 0x19 << 1 = 0x32
 ```
 
-The sensors remain logically identified as `0x18` and `0x19`.
+## SPI Flash Configuration
+
+The W25Q64 connects to SPI2.
+
+The selected SPI2 alternate-function pins are exposed through the Nucleo ST Morpho headers.
+
+```text
+NUCLEO-F446RE                    W25Q64
+------------------------------------------------
+3V3                              VCC
+GND                              GND
+PB10 / CN10 pin 25 / SPI2_SCK    CLK / SCK
+PC2  / CN7 pin 35 / SPI2_MISO    DO / MISO
+PC1  / CN7 pin 36 / SPI2_MOSI    DI / MOSI
+PB6  / FLASH_CS                  CS
+```
+
+`DI` and `DO` are named from the flash device's perspective:
+
+```text
+DI = flash data input  = STM32 MOSI
+DO = flash data output = STM32 MISO
+```
+
+The Nucleo Arduino `D0`–`D15` headers and the ST Morpho headers are separate connector systems. CubeMX identifies pins using the STM32 GPIO names such as `PB10`, `PC2`, and `PC1`.
+
+Chip select is controlled manually through PB6.
+
+```text
+CS HIGH → flash deselected
+CS LOW  → flash selected
+```
+
+SPI2 uses:
+
+```text
+Master mode
+Full duplex
+8-bit data
+MSB first
+CPOL low
+CPHA first edge
+Software NSS
+Baud-rate prescaler 16
+SPI baud rate approximately 2.625 Mbit/s
+```
+
+The SPI clock is intentionally kept conservative for reliable breadboard and jumper-wire communication.
+
+## Flash Organization
+
+The current W25Q64 driver models:
+
+```text
+Total capacity: 8 MiB
+Page size:      256 bytes
+Sector size:    4096 bytes
+```
+
+Each memory address refers to one byte.
+
+The 8-MiB device therefore provides byte addresses from:
+
+```text
+0x000000
+through
+0x7FFFFF
+```
+
+A 256-byte page contains 256 consecutive byte addresses.
+
+A 4-KiB sector contains:
+
+```text
+4096 / 256 = 16 pages
+```
+
+Flash operations are separated into:
+
+```text
+READ
+PROGRAM
+ERASE
+```
+
+Programming can change erased bits from `1` toward `0`.
+
+Returning programmed `0` bits to `1` requires an erase operation.
+
+Erase operations occur at sector granularity, so erasing one sector affects all 4096 bytes in that sector.
+
+`W25q64::program()` automatically splits writes that cross 256-byte page boundaries.
+
+## W25Q64 Driver
+
+The `W25q64` C++ class provides:
+
+- initialization and JEDEC identification
+- arbitrary flash reads
+- page-aware programming
+- 4-KiB sector erase
+- Write Enable handling
+- Write Enable Latch verification
+- Status Register 1 reads
+- BUSY-bit polling
+- address-range validation
+- explicit chip-select control
+- SPI communication failure tracking
+
+### JEDEC Identification
+
+The firmware sends the JEDEC ID command:
+
+```text
+0x9F
+```
+
+and reads three identification bytes.
+
+The connected device currently reports:
+
+```text
+0xEF4017
+```
+
+indicating successful communication with the connected W25Q64 flash device.
+
+### Page Programming
+
+A single W25Q64 Page Program operation must remain within one 256-byte page.
+
+If a requested write crosses a page boundary, the driver automatically splits it.
+
+For example:
+
+```text
+Starting address: 250
+Length:           20 bytes
+```
+
+is programmed as:
+
+```text
+Page 0:
+6 bytes
+
+Page 1:
+14 bytes
+```
+
+Before each Page Program operation, the driver:
+
+```text
+Waits for flash to become ready
+        ↓
+Sends Write Enable
+        ↓
+Verifies Write Enable Latch
+        ↓
+Sends Page Program command and address
+        ↓
+Sends data
+        ↓
+Waits for programming to complete
+```
+
+### Sector Erase
+
+Sector erase operates on 4096-byte boundaries.
+
+If an address inside a sector is supplied, the driver rounds the address down to the beginning of that sector.
+
+For example:
+
+```text
+Requested address:
+0x001234
+
+Containing sector:
+0x001000 - 0x001FFF
+
+Sector erase address:
+0x001000
+```
+
+The erase command restores the entire sector to the erased state.
+
+## Reserved Flash Test Sector
+
+The final 4-KiB flash sector is reserved for development self-testing.
+
+```text
+Start address: 0x7FF000
+End address:   0x7FFFFF
+```
+
+This region will not be used by the future persistent diagnostic logger.
+
+The `FLASH TEST` command:
+
+1. Refreshes the watchdog.
+2. Erases the reserved sector.
+3. Refreshes the watchdog.
+4. Programs a known 32-byte pattern.
+5. Refreshes the watchdog.
+6. Reads the pattern back.
+7. Compares every byte.
+8. Reports success or failure.
+
+The hardware flash self-test has been successfully verified using the connected W25Q64.
 
 ## Development Tools
 
@@ -133,6 +368,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── TemperatureHealthMonitor.hpp
 │   │   ├── UartCommandReceiver.hpp
 │   │   ├── UartTelemetry.hpp
+│   │   ├── W25q64.hpp
 │   │   ├── Watchdog.hpp
 │   │   └── application_bridge.h
 │   └── Src/
@@ -148,6 +384,7 @@ EmbeddedVehicleHealthController/
 │       ├── TemperatureHealthMonitor.cpp
 │       ├── UartCommandReceiver.cpp
 │       ├── UartTelemetry.cpp
+│       ├── W25q64.cpp
 │       ├── Watchdog.cpp
 │       └── application_bridge.cpp
 ├── Core/
@@ -163,60 +400,48 @@ STM32CubeIDE metadata and generated build-output directories are omitted from th
 
 ## Architecture
 
-The project separates generated hardware startup code from application-owned C++ logic.
-
 ```text
-STM32CubeMX-generated C code
-            │
-            ▼
-C-compatible application bridge
-            │
-            ▼
-C++ Application object
-            │
-            ├── DigitalOutput
-            ├── ButtonDebouncer
-            ├── PeriodicTimer
-            ├── FaultInjector
-            ├── FaultManager
-            ├── ResetCauseDetector
-            ├── Mcp9808 Sensor A
-            ├── Mcp9808 Sensor B
-            ├── TemperatureHealthMonitor
-            ├── UartCommandReceiver
-            ├── CommandParser
-            ├── UartTelemetry
-            └── Watchdog
+                 MCP9808 A
+                     │
+                     ├── I²C ──┐
+                     │          │
+                 MCP9808 B      │
+                                ▼
+                    TemperatureHealthMonitor
+                                │
+                                ▼
+                          FaultManager
+                                │
+             ┌──────────────────┼──────────────────┐
+             │                  │                  │
+             ▼                  ▼                  ▼
+           UART              SPI Flash        Future CAN
+                               │
+                               ▼
+                            W25Q64
 ```
 
-### Generated C Layer
+The C++ application layer currently contains:
 
-STM32CubeMX generates peripheral configuration and startup code in `Core/Src/main.c`.
-
-The generated layer initializes:
-
-- The system clock
-- GPIO
-- USART2
-- I2C1
-- TIM7
-- The independent watchdog
-- The on-board LED
-- The USER button
-
-Application calls are placed inside STM32 `USER CODE` regions so CubeMX regeneration does not overwrite them.
-
-### C/C++ Bridge
-
-`application_bridge.h` provides C-compatible functions callable from generated C code.
-
-`application_bridge.cpp` owns the C++ `Application` instance and forwards bridge calls to it.
-
-The bridge preserves CubeMX-generated `main.c` while allowing the application to be implemented in C++.
+```text
+Application
+├── DigitalOutput
+├── ButtonDebouncer
+├── PeriodicTimer
+├── FaultInjector
+├── FaultManager
+├── ResetCauseDetector
+├── Mcp9808 Sensor A
+├── Mcp9808 Sensor B
+├── TemperatureHealthMonitor
+├── W25q64
+├── UartCommandReceiver
+├── CommandParser
+├── UartTelemetry
+└── Watchdog
+```
 
 ## Cooperative Scheduling
-
-The application uses `HAL_GetTick()` and reusable `PeriodicTimer` objects to schedule work without blocking delays.
 
 Current task periods are:
 
@@ -229,128 +454,69 @@ Telemetry:          1000 ms
 Watchdog refresh:    500 ms
 ```
 
-Each call to `Application::run()` checks which tasks are due and executes them cooperatively.
+The application uses `HAL_GetTick()` and reusable `PeriodicTimer` objects rather than blocking delays for normal periodic scheduling.
 
-The temperature task runs before the health-check and telemetry tasks when their timers become due during the same application-loop iteration. This allows fault evaluation and telemetry to use the newest temperature information.
+## Automatic Heartbeat
 
-The watchdog refresh occurs near the end of the application-loop path. A stall earlier in the loop therefore prevents watchdog servicing.
+The on-board LD2 LED is an automatic system heartbeat.
 
-## GPIO Behavior
-
-### Status LED
-
-The on-board LD2 LED is controlled through the `DigitalOutput` class.
-
-The LED toggles every 500 milliseconds while heartbeat behavior is enabled.
-
-When heartbeat behavior is disabled, the LED is immediately forced off.
-
-### USER Button
-
-The USER button is read through the STM32 board-support package.
-
-A `ButtonDebouncer` filters mechanical transitions before creating a press event.
-
-Each accepted press:
-
-- Toggles heartbeat enable state
-- Increments the button press counter
-- Turns the LED off when heartbeat becomes disabled
-
-## Hardware Timer Interrupt
-
-TIM7 generates a periodic hardware interrupt.
-
-The interrupt callback performs minimal work:
+Every 500 milliseconds:
 
 ```text
-TIM7 interrupt
-    │
-    ▼
-HAL timer callback
-    │
-    ▼
-C-compatible bridge
-    │
-    ▼
-Increment timer interrupt counter
+PeriodicTimer
+      ↓
+updateHeartbeat()
+      ↓
+LD2 toggles
+      ↓
+heartbeat_count increments
 ```
 
-Application-level processing occurs later in the main loop.
+The heartbeat can no longer be manually disabled.
 
-The health monitor verifies that the TIM7 interrupt counter continues changing.
+This makes the heartbeat a consistent indication that normal application scheduling is continuing.
+
+The automatic heartbeat will later provide a natural foundation for CAN node-health supervision.
+
+## USER Button
+
+The Board 1 USER button is now a local diagnostic input.
+
+A debounced press:
+
+```text
+increments button_presses
+        ↓
+immediately transmits current UART telemetry
+```
+
+The button no longer controls heartbeat state.
+
+This behavior more closely represents a local status or diagnostic request.
+
+The future Board 2 USER button is planned for actuator self-test or warning acknowledgement.
 
 ## MCP9808 Temperature Acquisition
 
-Two `Mcp9808` objects represent independent redundant temperature channels.
+Two `Mcp9808` objects provide independent redundant temperature channels.
 
 ```text
-Sensor A address: 0x18
-Sensor B address: 0x19
+Sensor A: 0x18
+Sensor B: 0x19
 ```
 
-Both sensors share I2C1 while maintaining separate:
+Each sensor tracks:
 
-- Availability state
-- Most recent temperature
-- Successful-read counter
-- Failure counter
-- Device identity validation
-- Address configuration
+- availability
+- most recent temperature
+- successful reads
+- communication failures
 
-### Sensor Initialization
-
-During application startup, each sensor is checked independently.
-
-Initialization performs:
-
-1. I²C device-ready check
-2. Manufacturer-ID register read
-3. Manufacturer-ID validation
-4. Device-ID register read
-5. Device-ID validation
-6. Initial temperature read
-
-A missing or invalid sensor does not stop the entire controller. The unavailable channel is reported through telemetry while the remaining firmware continues operating.
-
-### Temperature Representation
-
-Temperatures are stored as signed integer milli-degrees Celsius.
-
-Examples:
-
-```text
-25000 m°C = 25.000°C
-24625 m°C = 24.625°C
--5000 m°C = -5.000°C
-```
-
-Using scaled integers avoids requiring floating-point formatting in embedded telemetry.
-
-### Independent Acquisition
-
-Each sensor is read separately.
-
-A failure on Sensor A does not prevent an attempt to read Sensor B.
-
-This allows the health controller to continue operating in a degraded single-sensor mode.
+A failed channel does not prevent acquisition from the other channel.
 
 ## Temperature Health Monitoring
 
-`TemperatureHealthMonitor` interprets the raw state of both MCP9808 channels.
-
-It determines:
-
-- Whether Sensor A is available
-- Whether Sensor B is available
-- Whether the measurements agree
-- Whether a trusted system temperature can be selected
-- Whether operation is redundant or degraded
-- Whether either valid sensor reports an overtemperature condition
-
-### Operating Modes
-
-The controller reports one of five temperature modes:
+`TemperatureHealthMonitor` provides:
 
 ```text
 REDUNDANT
@@ -362,96 +528,60 @@ UNAVAILABLE
 
 ### REDUNDANT
 
-Both sensors are available and their difference does not exceed the configured disagreement threshold.
+Both sensors are valid and agree within the configured threshold.
 
-The selected system temperature is the midpoint of Sensor A and Sensor B.
-
-Example:
-
-```text
-Sensor A: 24.500°C
-Sensor B: 25.000°C
-Selected: 24.750°C
-```
+The selected temperature is their midpoint.
 
 ### DEGRADED_A
 
-Only Sensor A is available.
+Only Sensor A is valid.
 
-Sensor A becomes the selected temperature source.
-
-The system has a sensor fault but continues producing valid temperature information.
+Sensor A remains usable as the selected temperature.
 
 ### DEGRADED_B
 
-Only Sensor B is available.
+Only Sensor B is valid.
 
-Sensor B becomes the selected temperature source.
-
-The system has a sensor fault but continues producing valid temperature information.
+Sensor B remains usable as the selected temperature.
 
 ### DISAGREEMENT
 
-Both sensors communicate, but their readings differ by more than the allowed threshold.
+Both sensors communicate but differ by more than the configured threshold.
 
-The raw measurements continue to be reported, but the controller does not declare either reading to be the trusted system temperature.
+The raw temperatures remain visible, but no trusted selected temperature is produced.
 
-With only two redundant channels, disagreement identifies that the measurements are inconsistent but cannot determine which individual sensor is incorrect.
+With only two sensors, the system cannot determine which sensor is incorrect.
 
 ### UNAVAILABLE
 
-Neither sensor is available.
+Neither sensor is valid.
 
-No valid selected temperature is produced.
-
-The rest of the controller continues running so diagnostics, UART communication, hardware timer monitoring, and watchdog recovery remain operational.
+No selected temperature is available.
 
 ## Temperature Thresholds
 
-Current prototype values:
+Current bench-prototype thresholds:
 
 ```text
-Sensor disagreement threshold: 2.000°C
-Overtemperature threshold:    60.000°C
+Sensor disagreement: 2.000°C
+Overtemperature:    60.000°C
 ```
 
-These values are application-defined demonstration thresholds.
+These are demonstration thresholds rather than validated vehicle battery safety limits.
 
-They are not intended to represent validated production vehicle or battery safety limits.
+If either available sensor reports a temperature at or above the overtemperature threshold, the overtemperature fault becomes active even if the two sensors disagree.
 
 ## Independent Watchdog
 
-The STM32 independent watchdog protects against complete application stalls.
+The application refreshes the independent watchdog every 500 milliseconds during normal execution.
 
-Configuration:
+The `WATCHDOG TEST` command deliberately stops watchdog refreshes so hardware reset behavior can be verified.
 
-```text
-Prescaler:       64
-Reload counter:  999
-Approx. timeout: 2 seconds
-```
+The watchdog is configured for an approximately 2-second timeout using the STM32 independent low-speed clock.
 
-The application normally refreshes the watchdog every 500 milliseconds.
-
-If application-loop progress stops, watchdog refreshes stop and the MCU resets after the configured timeout.
-
-Telemetry reports:
-
-```text
-watchdog_refresh_enabled
-watchdog_refreshes
-watchdog_failures
-```
-
-The `WATCHDOG TEST` command deliberately disables application watchdog refreshes so hardware recovery can be tested.
-
-After reset, normal startup enables watchdog servicing again.
+Flash self-test operations refresh the watchdog between destructive flash operations so flash testing does not interfere with watchdog recovery behavior.
 
 ## Reset-Cause Detection
-
-`ResetCauseDetector` reads STM32 RCC reset flags during application initialization.
-
-The flags are copied into application-owned state before the hardware flags are cleared.
 
 Telemetry reports:
 
@@ -460,7 +590,7 @@ reset_cause
 reset_cause_mask
 ```
 
-Supported primary causes:
+Supported causes include:
 
 ```text
 POWER_ON
@@ -473,50 +603,11 @@ LOW_POWER
 UNKNOWN
 ```
 
-Application mask bits:
-
-```text
-Bit 0 — 0x00000001 — Power-on reset
-Bit 1 — 0x00000002 — Brownout reset
-Bit 2 — 0x00000004 — External reset pin
-Bit 3 — 0x00000008 — Software reset
-Bit 4 — 0x00000010 — Independent watchdog reset
-Bit 5 — 0x00000020 — Window watchdog reset
-Bit 6 — 0x00000040 — Low-power reset
-```
-
-Multiple hardware flags may be present after one startup.
-
-The readable primary cause selects the most diagnostically useful result, while the complete mask preserves every captured flag.
-
-Power-on reset is given priority over brownout when both flags appear during a normal power-up sequence.
-
-Example:
-
-```text
-reset_cause=INDEPENDENT_WATCHDOG
-reset_cause_mask=0x00000010
-```
+When both power-on and brownout flags are present during ordinary startup, power-on is given higher reporting priority.
 
 ## Fault Monitoring
 
-`FaultManager` tracks failures through active and latched 32-bit masks.
-
-### Active Faults
-
-An active fault represents a failure occurring during the current health check.
-
-When the condition recovers, its active bit clears.
-
-### Latched Faults
-
-A latched fault records that a failure occurred.
-
-Its bit remains set after recovery, preserving evidence of intermittent failures.
-
-`CLEAR FAULTS` clears resolved historical faults. A currently active fault remains latched.
-
-### Fault Bits
+Fault bits:
 
 ```text
 Bit 0 — 0x00000001 — Button task timeout
@@ -527,93 +618,23 @@ Bit 4 — 0x00000010 — Temperature sensor disagreement
 Bit 5 — 0x00000020 — Overtemperature
 ```
 
-### Degraded Operation
+Both active and latched masks are maintained.
 
-A temperature-sensor communication failure sets an active system fault.
-
-For example, if Sensor B fails:
-
-```text
-active_faults includes 0x00000008
-healthy=0
-```
-
-However, if Sensor A remains available:
-
-```text
-temp_mode=DEGRADED_A
-temp_selected_valid=1
-```
-
-This distinction allows the controller to indicate that a fault exists while continuing to provide usable temperature data.
-
-### Sensor Disagreement
-
-When both sensors are available but differ by more than 2°C:
-
-```text
-temp_mode=DISAGREEMENT
-temp_selected_valid=0
-```
-
-The disagreement fault becomes active:
-
-```text
-0x00000010
-```
-
-The raw temperatures remain available for diagnostics.
-
-### Overtemperature
-
-If either available sensor reports a temperature at or above the prototype threshold:
-
-```text
-60000 m°C
-```
-
-the overtemperature fault becomes active:
-
-```text
-0x00000020
-```
-
-The overtemperature threshold is a demonstration value rather than a production vehicle safety specification.
-
-## Diagnostic Fault Injection
-
-`FaultInjector` allows existing faults to be simulated without stopping tasks or changing hardware configuration.
-
-```text
-Fault active = real failure OR diagnostic injection
-```
-
-Clearing an injection allows the active fault to recover during the next health check. Latched history remains until `CLEAR FAULTS`.
-
-Current injectable faults:
-
-```text
-Button task timeout
-Hardware timer inactive
-```
-
-Temperature fault injection is planned for future work.
+A degraded temperature mode can still provide a valid selected temperature while the corresponding unavailable-sensor fault keeps the overall system health state faulted.
 
 ## UART Telemetry
 
 USART2 communicates through the ST-LINK virtual COM port.
 
-Serial settings:
-
 ```text
-Baud rate:    115200
-Data bits:    8
-Parity:       None
-Stop bits:    1
-Flow control: None
+115200 baud
+8 data bits
+No parity
+1 stop bit
+No flow control
 ```
 
-Periodic telemetry includes:
+Current telemetry fields include:
 
 ```text
 uptime_ms
@@ -635,8 +656,15 @@ temp_selected_valid
 temp_selected_mC
 temp_disagreement_mC
 
+flash_available
+flash_jedec_id
+flash_failures
+flash_test_run
+flash_test_passed
+
 button_presses
-heartbeat_enabled
+heartbeat_count
+
 healthy
 timer_active
 timer_irq_count
@@ -658,82 +686,22 @@ rx_overflow_lines
 rx_errors
 ```
 
-### Normal Redundant Example
-
-```text
-temp_a_available=1
-temp_a_mC=24750
-temp_b_available=1
-temp_b_mC=24812
-temp_mode=REDUNDANT
-temp_selected_valid=1
-temp_selected_mC=24781
-temp_disagreement_mC=62
-```
-
-This represents:
-
-```text
-Sensor A:             24.750°C
-Sensor B:             24.812°C
-Difference:            0.062°C
-Selected temperature: 24.781°C
-```
-
-### Degraded Example
-
-```text
-temp_a_available=1
-temp_b_available=0
-temp_mode=DEGRADED_A
-temp_selected_valid=1
-```
-
-The selected temperature is Sensor A's most recent valid reading.
-
-### Disagreement Example
-
-```text
-temp_a_available=1
-temp_b_available=1
-temp_mode=DISAGREEMENT
-temp_selected_valid=0
-```
-
-Both raw values remain visible, but no trusted system temperature is selected.
-
-Telemetry uses a fixed-size 768-byte character buffer and a bounded UART timeout.
-
-No dynamic allocation is used.
-
-## Interrupt-Driven UART Reception
-
-USART2 reception is started with `HAL_UART_Receive_IT()`.
-
-One byte is received at a time.
-
-The receive-complete callback forwards the byte to a fixed-capacity ring buffer and rearms reception.
-
-Command parsing and application decisions occur in main-loop context rather than interrupt context.
+Telemetry uses a fixed 1024-byte buffer and a bounded 150-ms UART transmission timeout.
 
 ## UART Line Handling
 
-Either character completes an input line:
+Either character completes an input command:
 
 ```text
 Carriage return: \r
 Line feed:       \n
 ```
 
-This supports CR, LF, and CR+LF terminals.
+CR, LF, and CR+LF terminals are supported.
 
-For CR+LF, the first terminator completes the command and the second produces an empty line, which is ignored.
-
-The maximum command length is 63 characters, excluding the null terminator.
+For CR+LF, the second terminator produces an empty line, which is ignored.
 
 ## UART Commands
-
-Commands are uppercase and must match exactly.
 
 ### Status
 
@@ -741,15 +709,11 @@ Commands are uppercase and must match exactly.
 STATUS
 ```
 
-Immediately transmits the complete current telemetry line.
-
 ### Fault Status
 
 ```text
 FAULTS
 ```
-
-Immediately transmits telemetry containing active, latched, and injected fault masks.
 
 ### Reset Cause
 
@@ -757,36 +721,32 @@ Immediately transmits telemetry containing active, latched, and injected fault m
 RESET CAUSE
 ```
 
-Immediately transmits telemetry containing the reset-cause name and mask.
-
 ### Temperatures
 
 ```text
 TEMPERATURES
 ```
 
-Immediately transmits telemetry containing:
-
-- Both MCP9808 readings
-- Sensor availability
-- Sensor read counters
-- Sensor failure counters
-- Temperature operating mode
-- Selected temperature
-- Sensor disagreement
-
-### Heartbeat Control
+### Flash Status
 
 ```text
-HEARTBEAT ON
-HEARTBEAT OFF
+FLASH STATUS
 ```
 
-Responses:
+Immediately sends telemetry containing flash availability, JEDEC ID, failure count, and self-test state.
+
+### Flash Self-Test
 
 ```text
-OK HEARTBEAT ON
-OK HEARTBEAT OFF
+FLASH TEST
+```
+
+The final reserved 4-KiB flash sector is erased, programmed with a known pattern, read back, and verified.
+
+A successful test responds:
+
+```text
+OK FLASH TEST PASSED
 ```
 
 ### Fault Injection
@@ -797,24 +757,10 @@ INJECT TIMER FAULT
 CLEAR INJECTED FAULTS
 ```
 
-Responses:
-
-```text
-OK BUTTON FAULT INJECTED
-OK TIMER FAULT INJECTED
-OK INJECTED FAULTS CLEARED
-```
-
 ### Clear Counters
 
 ```text
 CLEAR
-```
-
-Response:
-
-```text
-OK COUNTERS CLEARED
 ```
 
 ### Clear Latched Faults
@@ -823,32 +769,10 @@ OK COUNTERS CLEARED
 CLEAR FAULTS
 ```
 
-Response:
-
-```text
-OK FAULTS CLEARED
-```
-
-A fault that remains active will become latched again during health monitoring.
-
-### Watchdog Reset Test
+### Watchdog Test
 
 ```text
 WATCHDOG TEST
-```
-
-Response:
-
-```text
-OK WATCHDOG RESET EXPECTED
-```
-
-The application stops refreshing the independent watchdog.
-
-After the watchdog resets the board, telemetry should report:
-
-```text
-reset_cause=INDEPENDENT_WATCHDOG
 ```
 
 ### Invalid Commands
@@ -859,238 +783,181 @@ Unrecognized commands receive:
 ERROR INVALID COMMAND
 ```
 
-Command matching is case-sensitive.
-
-## Temperature Failure Behavior
-
-### Normal Redundant Operation
+The previous:
 
 ```text
-Sensor A available
-Sensor B available
-Difference <= 2°C
-
-        ↓
-
-temp_mode=REDUNDANT
-temp_selected_valid=1
+HEARTBEAT ON
+HEARTBEAT OFF
 ```
 
-### Sensor B Failure
+commands have been removed because heartbeat operation is now automatic.
+
+## SPI Flash Verification
+
+### Startup Identification
+
+Successful startup communication produces:
 
 ```text
-Sensor A available
-Sensor B unavailable
-
-        ↓
-
-temp_mode=DEGRADED_A
-temp_selected_valid=1
-Temperature Sensor B fault active
+flash_available=1
+flash_jedec_id=0xEF4017
+flash_failures=0
 ```
 
-### Sensor A Failure
+This confirms successful SPI communication and flash identification.
+
+### Self-Test
+
+Run:
 
 ```text
-Sensor A unavailable
-Sensor B available
-
-        ↓
-
-temp_mode=DEGRADED_B
-temp_selected_valid=1
-Temperature Sensor A fault active
+FLASH TEST
 ```
 
-### Both Sensors Unavailable
+Expected response:
 
 ```text
-Sensor A unavailable
-Sensor B unavailable
-
-        ↓
-
-temp_mode=UNAVAILABLE
-temp_selected_valid=0
-Both sensor communication faults active
+OK FLASH TEST PASSED
 ```
 
-### Sensor Disagreement
+followed by telemetry containing:
 
 ```text
-Sensor A available
-Sensor B available
-Difference > 2°C
-
-        ↓
-
-temp_mode=DISAGREEMENT
-temp_selected_valid=0
-Temperature disagreement fault active
+flash_test_run=1
+flash_test_passed=1
 ```
 
-## Build and Run
+A passing self-test verifies:
 
-1. Open the project in STM32CubeIDE.
-2. Open `EmbeddedVehicleHealthController.ioc`.
-3. Confirm I2C1 uses PB8 for SCL and PB9 for SDA.
-4. Confirm USART2, TIM7, GPIO, and IWDG remain configured.
-5. Generate code when hardware configuration changes.
-6. Verify application calls remain inside STM32 `USER CODE` regions.
-7. Refresh the project.
-8. Clean the project.
-9. Build the project.
-10. Connect the MCP9808 sensors while the board is unpowered.
-11. Connect the Nucleo board through the ST-LINK USB connector.
-12. Program the board using the Run or Debug configuration.
-13. Open the ST-LINK virtual COM port at 115200 8-N-1 with no flow control.
+```text
+SPI2 configuration
+SCK communication
+MOSI communication
+MISO communication
+chip-select control
+JEDEC identification
+status-register polling
+Write Enable
+sector erase
+page programming
+flash reads
+byte-for-byte verification
+```
 
-Only one program can open the COM port at a time.
+### Flash Disconnection
 
-## Temperature Health Tests
-
-### Both Sensors Connected
+With the board powered off, disconnect the flash module and restart.
 
 Expected:
 
 ```text
+flash_available=0
+```
+
+The rest of the controller should continue operating.
+
+External flash unavailability currently does not force the controller into a fatal state.
+
+## Current Verified Telemetry Example
+
+A successful system state can resemble:
+
+```text
+reset_cause=POWER_ON
 temp_a_available=1
 temp_b_available=1
 temp_mode=REDUNDANT
 temp_selected_valid=1
-```
-
-Assuming no unrelated failures:
-
-```text
-active_faults=0x00000000
+flash_available=1
+flash_jedec_id=0xEF4017
+flash_failures=0
 healthy=1
+timer_active=1
+active_faults=0x00000000
+watchdog_failures=0
 ```
 
-### Sensor B Disconnected
+The W25Q64 erase/program/read self-test has also been verified successfully on hardware.
 
-Power the board off before changing wiring.
+## Future Two-Node Architecture
 
-Disconnect Sensor B and restart.
-
-Expected:
+The current controller will become Board 1 of a distributed CAN system.
 
 ```text
-temp_a_available=1
-temp_b_available=0
-temp_mode=DEGRADED_A
-temp_selected_valid=1
+BOARD 1 — Vehicle Health Controller
+        │
+        ├── redundant temperature sensing
+        ├── fault management
+        ├── watchdog recovery
+        ├── persistent SPI diagnostic logging
+        ├── UART diagnostics
+        └── CAN
+             │
+             │
+          CAN bus
+             │
+             ▼
+BOARD 2 — Thermal / Actuator Controller
+        │
+        ├── CAN supervision
+        ├── thermal-control state machine
+        ├── PWM cooling output
+        ├── external warning LED
+        ├── buzzer
+        ├── safe-state handling
+        ├── actuator status feedback
+        └── watchdog
 ```
 
-Expected Sensor B fault bit:
+Board 1 will transmit system-health and temperature information over CAN.
+
+Board 2 will use that information to determine the required thermal-control response.
+
+Example future thermal states may include:
 
 ```text
-0x00000008
+NORMAL
+WARM
+COOLING
+HIGH
+CRITICAL
+SAFE
 ```
 
-The controller is degraded but continues providing a valid temperature.
+Cooling output will increase gradually with temperature using PWM rather than operating only as a simple on/off output.
 
-### Sensor A Disconnected
+Board 2 will also provide visible and audible warning behavior through an external LED and buzzer.
 
-Expected:
+Both nodes will supervise CAN heartbeat messages.
 
-```text
-temp_a_available=0
-temp_b_available=1
-temp_mode=DEGRADED_B
-temp_selected_valid=1
-```
+Loss of communication will cause the affected node to report a communication fault and transition to defined safe behavior.
 
-Expected Sensor A fault bit:
+Board 2 will transmit its own health, actuator status, and fault information back to Board 1.
 
-```text
-0x00000004
-```
-
-### Both Sensors Disconnected
-
-Expected:
-
-```text
-temp_a_available=0
-temp_b_available=0
-temp_mode=UNAVAILABLE
-temp_selected_valid=0
-```
-
-Combined sensor-failure mask:
-
-```text
-0x0000000C
-```
-
-The controller should continue running UART, heartbeat, timer monitoring, and watchdog servicing.
-
-### Sensor Disagreement
-
-With both sensors connected, gently warm one sensor while keeping the other near ambient temperature.
-
-When the difference exceeds 2°C:
-
-```text
-temp_mode=DISAGREEMENT
-temp_selected_valid=0
-```
-
-Expected disagreement fault:
-
-```text
-0x00000010
-```
-
-After the sensors return to agreement, the active fault clears.
-
-The latched fault remains until:
-
-```text
-CLEAR FAULTS
-```
-
-### Overtemperature
-
-The current application threshold is:
-
-```text
-60.000°C
-```
-
-Deliberately heating the hardware to this value is not required for bench testing.
-
-A future diagnostic-injection feature can test this path without physically heating the sensor.
+Board 1 will eventually store important remote-node events in persistent SPI flash.
 
 ## Design Principles
 
-- Separate generated hardware code from application-owned code
-- Keep CubeMX hardware configuration in the `.ioc` file
-- Keep application modifications inside protected `USER CODE` regions
-- Preserve generated C startup code through a C-compatible bridge
+- Separate generated hardware code from application-owned C++
+- Keep hardware configuration in the `.ioc` file
 - Keep interrupt handlers short
-- Perform parsing and application decisions in main-loop context
 - Avoid dynamic allocation
 - Use fixed-capacity buffers
 - Use fixed-width integer types
-- Use scaled integers for physical measurements
 - Use bounded blocking operations
-- Keep hardware-specific dependencies near the application boundary
-- Keep raw sensor acquisition separate from system-level health decisions
-- Represent commands, faults, reset causes, and temperature modes with strongly typed enumerations
 - Keep redundant sensor channels independent
-- Attempt each sensor transaction independently
-- Continue operating after a single sensor failure
-- Distinguish degraded operation from complete loss of temperature information
-- Do not select a trusted temperature when two redundant channels disagree
-- Preserve raw measurements for diagnostics even when they are not trusted
-- Preserve the last successful measurement while marking its validity separately
-- Validate sensor identity rather than relying only on an address acknowledgment
-- Preserve intermittent failures with latched fault history
-- Preserve all captured reset flags while selecting one readable primary cause
-- Clear hardware reset flags only after copying them into application state
-- Keep test injection separate from production fault state
-- Refresh the watchdog only after application-loop progress
-- Allow hardware recovery from complete firmware stalls
-- Track failures rather than silently ignoring them
+- Separate raw sensor acquisition from health decisions
+- Separate active faults from latched fault history
+- Keep heartbeat behavior automatic and deterministic
+- Use the USER button for diagnostics rather than disabling system-health behavior
+- Keep SPI chip selection explicit
+- Validate external flash identity during startup
+- Poll flash BUSY state before dependent operations
+- Perform Write Enable before destructive flash operations
+- Handle flash page boundaries in the driver
+- Reserve a dedicated development sector for destructive testing
+- Verify programmed flash data by reading it back
+- Continue operating if an external peripheral is unavailable
+- Preserve watchdog recovery behavior during peripheral operations
+- Prepare subsystem boundaries for future CAN integration
+- Use defined safe-state behavior for future distributed-node failures
