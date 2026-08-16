@@ -38,6 +38,11 @@ CommandType CommandParser::parse(
         return CommandType::FlashTest;
     }
 
+    if (stringsEqual(line, "LOG ERASE"))
+    {
+        return CommandType::LogErase;
+    }
+
     if (stringsEqual(
         line,
         "INJECT BUTTON FAULT"))
@@ -102,3 +107,4 @@ bool CommandParser::stringsEqual(
     return (*first == '\0') &&
            (*second == '\0');
 }
+

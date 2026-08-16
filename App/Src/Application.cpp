@@ -46,6 +46,11 @@ constexpr std::uint32_t
     FlashTestSectorAddress =
         W25q64::CapacityBytes -
         W25q64::SectorSizeBytes;
+
+static_assert(
+    DiagnosticLogger::RegionEndAddress <=
+        FlashTestSectorAddress,
+    "Diagnostic log must not overlap FLASH TEST sector");
 }
 
 Application::Application()
@@ -75,6 +80,9 @@ Application::Application()
           &hspi2,
           FLASH_CS_GPIO_Port,
           FLASH_CS_Pin},
+
+      diagnosticLogger_{
+          &flash_},
 
       uartReceiver_{},
 
@@ -126,6 +134,8 @@ void Application::initialize()
     systemHealthy_ = true;
     hardwareTimerActive_ = false;
     watchdogRefreshEnabled_ = true;
+
+    previousLoggedFaultMask_ = 0U;
 
     flashTestRun_ = false;
     flashTestPassed_ = false;
@@ -198,8 +208,30 @@ void Application::initialize()
     const bool flashInitialized =
         flash_.initialize();
 
-    static_cast<void>(
-        flashInitialized);
+    if (flashInitialized)
+    {
+        refreshWatchdog();
+
+        const bool loggerInitialized =
+            diagnosticLogger_.initialize();
+
+        if (loggerInitialized)
+        {
+            const bool startupLogged =
+                diagnosticLogger_.append(
+                    DiagnosticEventType::
+                        SystemStartup,
+                    HAL_GetTick(),
+                    static_cast<std::uint32_t>(
+                        resetCauseDetector_
+                            .primaryCause()),
+                    resetCauseDetector_
+                        .causeMask());
+
+            static_cast<void>(
+                startupLogged);
+        }
+    }
 
     refreshWatchdog();
 }
@@ -556,6 +588,32 @@ void Application::handleCommand(
             break;
         }
 
+        case CommandType::LogErase:
+        {
+            ++validCommandCount_;
+
+            refreshWatchdog();
+
+            const bool erased =
+                diagnosticLogger_.eraseAll();
+
+            refreshWatchdog();
+
+            const bool sent =
+                telemetry_.sendText(
+                    erased
+                        ? "OK DIAGNOSTIC LOG ERASED"
+                        : "ERROR DIAGNOSTIC LOG ERASE FAILED");
+
+            static_cast<void>(
+                sent);
+
+            sendTelemetry(
+                HAL_GetTick());
+
+            break;
+        }
+
         case CommandType::InjectButtonFault:
         {
             ++validCommandCount_;
@@ -693,6 +751,10 @@ void Application::performHealthCheck(
     std::uint32_t currentTimeMs)
 {
     const std::uint32_t
+        previousActiveFaultMask =
+            previousLoggedFaultMask_;
+
+    const std::uint32_t
         timeSinceButtonTaskMs =
             currentTimeMs -
             lastButtonTaskTimeMs_;
@@ -749,6 +811,51 @@ void Application::performHealthCheck(
         Fault::Overtemperature,
         temperatureHealthMonitor_
             .overtemperatureFaultActive());
+
+    const std::uint32_t
+        currentActiveFaultMask =
+            faultManager_.activeFaultMask();
+
+    const std::uint32_t
+        newlyActivatedFaults =
+            currentActiveFaultMask &
+            ~previousActiveFaultMask;
+
+    const std::uint32_t
+        newlyClearedFaults =
+            previousActiveFaultMask &
+            ~currentActiveFaultMask;
+
+    if (newlyActivatedFaults != 0U)
+    {
+        const bool logged =
+            diagnosticLogger_.append(
+                DiagnosticEventType::
+                    FaultActivated,
+                currentTimeMs,
+                newlyActivatedFaults,
+                currentActiveFaultMask);
+
+        static_cast<void>(
+            logged);
+    }
+
+    if (newlyClearedFaults != 0U)
+    {
+        const bool logged =
+            diagnosticLogger_.append(
+                DiagnosticEventType::
+                    FaultCleared,
+                currentTimeMs,
+                newlyClearedFaults,
+                currentActiveFaultMask);
+
+        static_cast<void>(
+            logged);
+    }
+
+    previousLoggedFaultMask_ =
+        currentActiveFaultMask;
 
     systemHealthy_ =
         !faultManager_.hasActiveFaults();
@@ -840,6 +947,45 @@ void Application::sendTelemetry(
             flash_.failureCount(),
             flashTestRun_,
             flashTestPassed_,
+
+            diagnosticLogger_
+                .initialized(),
+
+            diagnosticLogger_
+                .recordCount(),
+
+            DiagnosticLogger::
+                RecordCapacity,
+
+            diagnosticLogger_
+                .full(),
+
+            diagnosticLogger_
+                .invalidRecordCount(),
+
+            diagnosticLogger_
+                .failureCount(),
+
+            diagnosticLogger_
+                .nextSequence(),
+
+            diagnosticLogger_
+                .lastRecordValid(),
+
+            diagnosticLogger_
+                .lastRecord().eventType,
+
+            diagnosticLogger_
+                .lastRecord().sequence,
+
+            diagnosticLogger_
+                .lastRecord().uptimeMs,
+
+            diagnosticLogger_
+                .lastRecord().data0,
+
+            diagnosticLogger_
+                .lastRecord().data1,
 
             buttonPressCount_,
             heartbeatExecutionCount_,

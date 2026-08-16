@@ -34,6 +34,20 @@ bool UartTelemetry::sendStatus(
     bool flashTestRun,
     bool flashTestPassed,
 
+    bool diagnosticLogInitialized,
+    std::uint32_t diagnosticLogRecordCount,
+    std::uint32_t diagnosticLogRecordCapacity,
+    bool diagnosticLogFull,
+    std::uint32_t diagnosticLogInvalidRecordCount,
+    std::uint32_t diagnosticLogFailureCount,
+    std::uint32_t diagnosticLogNextSequence,
+    bool diagnosticLogLastRecordValid,
+    std::uint32_t diagnosticLogLastEventType,
+    std::uint32_t diagnosticLogLastSequence,
+    std::uint32_t diagnosticLogLastUptimeMs,
+    std::uint32_t diagnosticLogLastData0,
+    std::uint32_t diagnosticLogLastData1,
+
     std::uint32_t buttonPressCount,
     std::uint32_t heartbeatExecutionCount,
 
@@ -93,6 +107,20 @@ bool UartTelemetry::sendStatus(
             "flash_failures=%lu "
             "flash_test_run=%u "
             "flash_test_passed=%u "
+
+            "log_initialized=%u "
+            "log_records=%lu "
+            "log_capacity=%lu "
+            "log_full=%u "
+            "log_invalid_records=%lu "
+            "log_failures=%lu "
+            "log_next_sequence=%lu "
+            "log_last_valid=%u "
+            "log_last_type=%lu "
+            "log_last_sequence=%lu "
+            "log_last_uptime_ms=%lu "
+            "log_last_data0=0x%08lX "
+            "log_last_data1=0x%08lX "
 
             "button_presses=%lu "
             "heartbeat_count=%lu "
@@ -167,6 +195,48 @@ bool UartTelemetry::sendStatus(
 
             flashTestRun ? 1U : 0U,
             flashTestPassed ? 1U : 0U,
+
+            diagnosticLogInitialized
+                ? 1U
+                : 0U,
+
+            static_cast<unsigned long>(
+                diagnosticLogRecordCount),
+
+            static_cast<unsigned long>(
+                diagnosticLogRecordCapacity),
+
+            diagnosticLogFull
+                ? 1U
+                : 0U,
+
+            static_cast<unsigned long>(
+                diagnosticLogInvalidRecordCount),
+
+            static_cast<unsigned long>(
+                diagnosticLogFailureCount),
+
+            static_cast<unsigned long>(
+                diagnosticLogNextSequence),
+
+            diagnosticLogLastRecordValid
+                ? 1U
+                : 0U,
+
+            static_cast<unsigned long>(
+                diagnosticLogLastEventType),
+
+            static_cast<unsigned long>(
+                diagnosticLogLastSequence),
+
+            static_cast<unsigned long>(
+                diagnosticLogLastUptimeMs),
+
+            static_cast<unsigned long>(
+                diagnosticLogLastData0),
+
+            static_cast<unsigned long>(
+                diagnosticLogLastData1),
 
             static_cast<unsigned long>(
                 buttonPressCount),

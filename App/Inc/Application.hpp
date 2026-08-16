@@ -4,6 +4,7 @@
 #include "ButtonDebouncer.hpp"
 #include "CommandParser.hpp"
 #include "DigitalOutput.hpp"
+#include "DiagnosticLogger.hpp"
 #include "FaultInjector.hpp"
 #include "FaultManager.hpp"
 #include "Mcp9808.hpp"
@@ -165,6 +166,7 @@ private:
         temperatureHealthMonitor_;
 
     W25q64 flash_;
+    DiagnosticLogger diagnosticLogger_;
 
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
@@ -199,6 +201,8 @@ private:
 
     std::uint32_t
         lastButtonTaskTimeMs_{0U};
+
+    std::uint32_t previousLoggedFaultMask_{0U};
 
     bool systemHealthy_{true};
     bool hardwareTimerActive_{false};

@@ -38,6 +38,20 @@ public:
         bool flashTestRun,
         bool flashTestPassed,
 
+        bool diagnosticLogInitialized,
+        std::uint32_t diagnosticLogRecordCount,
+        std::uint32_t diagnosticLogRecordCapacity,
+        bool diagnosticLogFull,
+        std::uint32_t diagnosticLogInvalidRecordCount,
+        std::uint32_t diagnosticLogFailureCount,
+        std::uint32_t diagnosticLogNextSequence,
+        bool diagnosticLogLastRecordValid,
+        std::uint32_t diagnosticLogLastEventType,
+        std::uint32_t diagnosticLogLastSequence,
+        std::uint32_t diagnosticLogLastUptimeMs,
+        std::uint32_t diagnosticLogLastData0,
+        std::uint32_t diagnosticLogLastData1,
+
         std::uint32_t buttonPressCount,
         std::uint32_t heartbeatExecutionCount,
 
@@ -72,7 +86,7 @@ public:
 
 private:
     static constexpr std::size_t BufferSize =
-        1024U;
+        1280U;
 
     static constexpr std::uint32_t
         TransmitTimeoutMs = 150U;
@@ -86,3 +100,4 @@ private:
 };
 
 #endif
+

@@ -9,6 +9,7 @@ enum class CommandType
     Temperatures,
     FlashStatus,
     FlashTest,
+    LogErase,
     InjectButtonFault,
     InjectTimerFault,
     WatchdogTest,
