@@ -1,7 +1,6 @@
-````markdown
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and transmits system diagnostics through UART.
+A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, provides external SPI flash storage, processes serial commands, and transmits system diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate application-owned C++ layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -44,10 +43,10 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Persistent startup/reset-cause records
 - Persistent fault-activation records
 - Persistent fault-clearing records
-- Startup reconstruction of diagnostic-log state
-- Flash-record checksum validation
-- Detection of erased and invalid diagnostic records
-- Monotonic diagnostic-event sequence numbering
+- Diagnostic-log reconstruction after reset
+- Diagnostic-record checksum validation
+- Invalid and erased flash-record detection
+- Persistent diagnostic sequence numbering
 - Explicit diagnostic-log erase command
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
@@ -239,20 +238,20 @@ The first two sectors are reserved for persistent diagnostic logging.
 
 ```text
 0x000000
-┌──────────────────────────────┐
-│ Diagnostic log sector 0      │
-│ 0x000000 - 0x000FFF          │
-├──────────────────────────────┤
-│ Diagnostic log sector 1      │
-│ 0x001000 - 0x001FFF          │
-├──────────────────────────────┤
-│                              │
-│ Currently unused flash       │
-│                              │
-├──────────────────────────────┤
-│ Reserved FLASH TEST sector   │
-│ 0x7FF000 - 0x7FFFFF          │
-└──────────────────────────────┘
++--------------------------------+
+| Diagnostic log sector 0        |
+| 0x000000 - 0x000FFF            |
++--------------------------------+
+| Diagnostic log sector 1        |
+| 0x001000 - 0x001FFF            |
++--------------------------------+
+|                                |
+| Currently unused flash         |
+|                                |
++--------------------------------+
+| Reserved FLASH TEST sector     |
+| 0x7FF000 - 0x7FFFFF            |
++--------------------------------+
 0x7FFFFF
 ```
 
@@ -378,9 +377,9 @@ The hardware flash self-test has been successfully verified using the connected 
 
 ## Persistent Diagnostic Logging
 
-`DiagnosticLogger` provides structured nonvolatile event storage using the existing `W25q64` driver.
+The `DiagnosticLogger` class provides structured nonvolatile diagnostic-event storage using the existing `W25q64` driver.
 
-The logger currently reserves two 4-KiB sectors:
+The logger reserves the first two 4-KiB flash sectors:
 
 ```text
 Start address: 0x000000
@@ -388,7 +387,7 @@ End address:   0x001FFF
 Region size:   8192 bytes
 ```
 
-The final W25Q64 sector at `0x7FF000` remains reserved exclusively for `FLASH TEST`.
+The final sector beginning at `0x7FF000` remains reserved exclusively for the destructive `FLASH TEST` command.
 
 ### Diagnostic Record Format
 
@@ -411,23 +410,18 @@ Total    32 bytes
 
 The fixed-size record format provides deterministic storage without dynamic allocation.
 
-Because:
+A compile-time size check ensures that changes to the C++ structure cannot silently change the persistent record size.
+
+Because the flash page size is 256 bytes:
 
 ```text
-Page size   = 256 bytes
-Record size = 32 bytes
+256 / 32 = 8 records per page
 ```
 
-each flash page contains:
+Because each sector is 4096 bytes:
 
 ```text
-256 / 32 = 8 records
-```
-
-Each 4-KiB sector contains:
-
-```text
-4096 / 32 = 128 records
+4096 / 32 = 128 records per sector
 ```
 
 The two-sector logging region therefore provides:
@@ -445,9 +439,9 @@ Magic:          0x474C5645
 Format version: 1
 ```
 
-The magic value allows stored data to be distinguished from unrelated flash contents.
+The magic value helps distinguish diagnostic records from unrelated flash contents.
 
-The format version provides a way for future firmware to recognize changes to the persistent record layout.
+The format version provides a mechanism for future firmware to recognize changes to the persistent-data layout.
 
 ### Current Event Types
 
@@ -457,32 +451,38 @@ The format version provides a way for future firmware to recognize changes to th
 3 = FaultCleared
 ```
 
-The event-type field is stored as a fixed-width 32-bit value.
-
-Future events can extend this enumeration for capabilities such as CAN communication failures and Board 2 actuator faults.
+Future event types can extend the same record structure for events such as CAN communication failures and remote actuator faults.
 
 ### System Startup Records
 
-A startup event is written after the flash and diagnostic logger initialize successfully.
+After the W25Q64 and diagnostic logger initialize successfully, the application appends a `SystemStartup` event.
 
-For `SystemStartup` records:
+For startup records:
 
 ```text
 data0 = primary ResetCause enum value
 data1 = complete reset-cause mask
 ```
 
-The primary reset cause represents one selected software interpretation.
+`data0` stores one selected primary reset cause.
 
-The reset-cause mask preserves all reset flags observed by the reset-cause detector.
+`data1` is a bit mask that preserves all reset flags detected during startup.
 
-This allows a watchdog reset, power-on reset, software reset, or other supported cause to be retained across future resets and power cycles.
+For example:
+
+```text
+log_last_type=1
+log_last_data0=0x00000005
+log_last_data1=0x00000014
+```
+
+indicates a `SystemStartup` record where the primary reset cause was the independent watchdog and the complete reset-cause mask contained multiple reset flags.
 
 ### Fault Transition Records
 
-Persistent logging is transition-based rather than periodically writing the same active fault state.
+Fault events are logged only when the active-fault state changes.
 
-When new fault bits become active:
+When one or more faults become active:
 
 ```text
 eventType = FaultActivated
@@ -490,7 +490,7 @@ data0     = fault bits that became active
 data1     = complete active-fault mask afterward
 ```
 
-When active fault bits clear:
+When one or more faults clear:
 
 ```text
 eventType = FaultCleared
@@ -501,26 +501,28 @@ data1     = complete active-fault mask afterward
 For example:
 
 ```text
-data0 = 0x00000004
-data1 = 0x00000004
+eventType = FaultActivated
+data0     = 0x00000004
+data1     = 0x00000004
 ```
 
-for a `FaultActivated` event indicates that the Sensor A unavailable fault became active and remained the only active fault.
+means the Sensor A unavailable fault became active and was the only active fault afterward.
 
-A later record containing:
+If it later clears:
 
 ```text
-data0 = 0x00000004
-data1 = 0x00000000
+eventType = FaultCleared
+data0     = 0x00000004
+data1     = 0x00000000
 ```
 
-for a `FaultCleared` event indicates that the Sensor A unavailable fault cleared and no active faults remained.
+the record indicates that the Sensor A unavailable fault cleared and no active faults remained.
 
-Logging transitions instead of repeatedly logging steady-state faults reduces unnecessary flash writes.
+Logging only transitions prevents a persistent fault from generating another flash record every health-monitoring cycle.
 
 ### Sequence Numbers
 
-Every successfully appended record receives a sequence number.
+Every successfully appended diagnostic record receives a sequence number.
 
 A normal sequence begins:
 
@@ -529,12 +531,14 @@ A normal sequence begins:
 1
 2
 3
+4
+5
 ...
 ```
 
-The sequence number represents chronological event ordering rather than the physical flash slot number.
+Sequence numbers describe logical event order rather than physical flash-slot numbers.
 
-During startup, the logger scans existing valid records and reconstructs the next sequence number from persistent storage.
+During startup, the logger scans existing valid records and reconstructs the sequence state.
 
 For example:
 
@@ -543,29 +547,39 @@ log_last_sequence=5
 log_next_sequence=6
 ```
 
-means record sequence 5 is the most recent valid event and sequence 6 will be assigned to the next successfully appended event.
+means sequence 5 is the newest valid event and sequence 6 will be assigned to the next successfully appended event.
 
 Sequence numbering therefore continues across MCU resets.
 
 ### Uptime Timestamp
 
-Each event stores the current `HAL_GetTick()` value in:
+Each diagnostic record stores:
 
 ```text
 uptimeMs
 ```
 
-This timestamp represents how long the current MCU boot had been running when that event was recorded.
+using the current `HAL_GetTick()` value.
 
-The uptime value restarts after reset, while the persistent sequence number continues to provide ordering across multiple boots.
+This indicates how long the current boot had been running when the event occurred.
+
+For example:
+
+```text
+log_last_uptime_ms=65
+```
+
+means the event was recorded approximately 65 milliseconds after that boot began.
+
+The uptime counter restarts after reset, while persistent sequence numbers preserve event ordering across multiple boots.
 
 ### Record Checksum
 
-Each record contains a 32-bit checksum calculated from its stored fields.
+Each record contains a 32-bit checksum calculated from the other record fields.
 
-The current implementation uses an FNV-1a-style checksum.
+The implementation uses an FNV-1a-style checksum.
 
-A record is accepted as valid only if:
+A record is accepted as valid only when:
 
 ```text
 magic is correct
@@ -575,9 +589,9 @@ AND
 checksum matches
 ```
 
-The checksum helps detect incomplete or corrupted flash records.
+This allows the logger to reject incomplete or corrupted records.
 
-It is used as an integrity check for this bench prototype and is not presented as a safety-certified error-detection mechanism.
+The checksum is an integrity mechanism for the bench prototype and is not presented as a validated safety-certified error-detection mechanism.
 
 ### Erased-State Detection
 
@@ -587,21 +601,21 @@ An erased NOR-flash byte reads as:
 0xFF
 ```
 
-An unused 32-byte diagnostic-record slot therefore contains only erased `0xFF` values.
+An unused diagnostic-record slot therefore contains only erased values.
 
-The logger considers a slot erased only when every 32-bit field contains:
+For a 32-bit field, the erased value is:
 
 ```text
 0xFFFFFFFF
 ```
 
-Only completely erased slots are eligible for new records.
+A record slot is considered available only when every field remains erased.
 
 ### Startup Log Recovery
 
-`DiagnosticLogger::initialize()` scans all 256 record slots.
+`DiagnosticLogger::initialize()` scans the complete two-sector logging region when the application starts.
 
-Each slot is classified as:
+Each record slot is classified as:
 
 ```text
 ERASED
@@ -609,54 +623,62 @@ VALID
 INVALID
 ```
 
-An erased record can be used for a future append.
+An erased slot is available for a future append.
 
-A valid record contains the correct magic value, record-format version, and checksum.
+A valid slot contains the expected:
 
-An invalid record contains programmed data but fails validation.
+```text
+magic
+format version
+checksum
+```
 
-Invalid records are not overwritten because NOR flash cannot safely restore programmed `0` bits to `1` without erasing an entire sector.
+An invalid slot contains programmed data but does not pass record validation.
+
+Invalid slots are not overwritten because NOR flash cannot safely change programmed `0` bits back to `1` without a sector erase.
 
 The startup scan reconstructs:
 
-- number of valid records
-- number of invalid records
+- valid record count
+- invalid record count
 - latest valid record
 - next sequence number
-- next erased write location
+- next erased write address
 - full/not-full state
 
-This allows logging state to survive MCU resets without storing separate volatile metadata.
+This allows the logger to recover entirely from persistent flash contents after the MCU's volatile RAM state has been lost.
 
 ### Append Behavior
 
-A new diagnostic event is appended by:
+A new event is stored using the following sequence:
 
 ```text
 Find next erased slot
         ↓
-Construct 32-byte record
+Construct diagnostic record
         ↓
 Assign sequence number
         ↓
 Calculate checksum
         ↓
-Program record through W25q64
+Program through W25q64
         ↓
 Read record back
         ↓
 Validate stored record
         ↓
-Advance logger state
+Update logger state
 ```
 
-RAM bookkeeping is updated only after the programmed record has been read back and validated.
+The application does not assume that a successful SPI programming call automatically means the persistent record is correct.
+
+The record is read back and validated before the append is considered complete.
 
 ### Partially Written Records
 
-If power is lost during a record program operation, the affected slot may contain partially programmed data.
+If power is lost during a flash programming operation, the affected record may become partially programmed.
 
-Such a record will normally be:
+Such a slot can be:
 
 ```text
 not erased
@@ -664,27 +686,27 @@ AND
 not valid
 ```
 
-During the next startup scan it is counted as an invalid record and is not reused.
+During the next startup scan it is counted as an invalid record.
 
-The logger searches for a later completely erased slot instead.
+The logger does not program over that slot.
 
-This prevents a partially programmed NOR-flash region from being treated as safe writable storage.
+Instead, it searches for a later completely erased slot.
+
+This avoids treating partially programmed NOR flash as safe writable storage.
 
 ### Log Full Behavior
 
-The logger does not automatically erase old records when the two-sector logging region becomes full.
+The logger intentionally does not erase old history automatically.
 
-When all 256 record slots have been consumed:
+When the logging region has no erased record slots remaining:
 
 ```text
 log_full=1
 ```
 
-Further append attempts stop rather than silently destroying previous diagnostic history.
+New append requests stop rather than silently destroying older diagnostic evidence.
 
-This intentionally favors preserving diagnostic evidence over automatic circular-buffer behavior.
-
-A future implementation could add sector recycling or generation-based wear management if application requirements justify the additional complexity.
+A future implementation could add circular-sector recycling or wear-leveling if the application requirements justify the additional complexity.
 
 ### Log Erase
 
@@ -694,21 +716,19 @@ The UART command:
 LOG ERASE
 ```
 
-explicitly erases the two diagnostic-log sectors:
+explicitly erases the two sectors reserved for diagnostic records:
 
 ```text
 0x000000 - 0x001FFF
 ```
 
-A successful command responds:
+A successful operation responds:
 
 ```text
 OK DIAGNOSTIC LOG ERASED
 ```
 
-The reserved `FLASH TEST` sector is not affected.
-
-After erasing:
+After the erase:
 
 ```text
 log_records=0
@@ -718,7 +738,9 @@ log_next_sequence=0
 log_last_valid=0
 ```
 
-A new startup record is created after the next reset.
+The reserved `FLASH TEST` sector is not affected.
+
+A new `SystemStartup` record is created the next time the controller resets.
 
 ## Development Tools
 
@@ -822,26 +844,23 @@ Application
 └── Watchdog
 ```
 
-`Application` decides which system events are important enough to log.
-
-`DiagnosticLogger` owns persistent record formatting, validation, sequencing, scanning, and append behavior.
-
-`W25q64` remains responsible for the low-level SPI flash operations.
+The persistent logging dependency path is:
 
 ```text
 Application
     │
-    │ event policy
+    │ decides which events should be stored
     ▼
 DiagnosticLogger
     │
-    │ persistent-record management
+    │ manages record format, sequencing,
+    │ scanning, validation, and append behavior
     ▼
 W25q64
     │
-    │ SPI flash operations
+    │ performs raw flash operations
     ▼
-W25Q64 hardware
+SPI2 / W25Q64
 ```
 
 ## Cooperative Scheduling
@@ -984,7 +1003,7 @@ The watchdog is configured for an approximately 2-second timeout using the STM32
 
 Flash self-test operations refresh the watchdog between destructive flash operations so flash testing does not interfere with watchdog recovery behavior.
 
-A watchdog-generated reboot is also captured by the persistent diagnostic logger as a `SystemStartup` record containing the detected reset-cause information.
+After a watchdog reset, the following boot creates a persistent `SystemStartup` record containing the independent-watchdog reset information.
 
 ## Reset-Cause Detection
 
@@ -1010,7 +1029,14 @@ UNKNOWN
 
 When both power-on and brownout flags are present during ordinary startup, power-on is given higher reporting priority.
 
-The primary cause and complete cause mask are both persisted in `SystemStartup` diagnostic records.
+The persistent startup record stores both:
+
+```text
+primary reset cause
+complete reset-cause mask
+```
+
+This preserves more information than storing only the selected primary cause.
 
 ## Fault Monitoring
 
@@ -1029,9 +1055,7 @@ Both active and latched masks are maintained.
 
 A degraded temperature mode can still provide a valid selected temperature while the corresponding unavailable-sensor fault keeps the overall system health state faulted.
 
-Changes in the active-fault mask are persisted as diagnostic records.
-
-The logger stores only fault transitions rather than writing the same active state during every health-monitoring cycle.
+Changes to the active-fault mask are also stored as persistent diagnostic events.
 
 ## UART Telemetry
 
@@ -1115,7 +1139,7 @@ Telemetry uses a fixed 1280-byte buffer and a bounded 150-ms UART transmission t
 
 ### Diagnostic-Log Telemetry
 
-Example:
+Example diagnostic-log telemetry:
 
 ```text
 log_initialized=1
@@ -1133,27 +1157,51 @@ log_last_data0=0x00000005
 log_last_data1=0x00000014
 ```
 
-The first group describes the logger itself:
+Logger-state fields:
 
 ```text
-log_initialized       logger startup scan completed successfully
-log_records           number of valid stored records
-log_capacity          maximum number of record slots
-log_full              no erased record slots remain
-log_invalid_records   programmed records that failed validation
-log_failures          logger read/write/verification failures
-log_next_sequence     sequence assigned to the next successful event
+log_initialized
+    1 when the persistent logger initialized successfully.
+
+log_records
+    Number of valid records currently stored.
+
+log_capacity
+    Maximum number of diagnostic-record slots.
+
+log_full
+    1 when no erased record slots remain.
+
+log_invalid_records
+    Number of programmed slots that failed record validation.
+
+log_failures
+    Number of logger read, write, or verification failures.
+
+log_next_sequence
+    Sequence number assigned to the next successfully appended record.
 ```
 
-The `log_last_*` fields describe the latest valid stored event:
+Latest-record fields:
 
 ```text
 log_last_valid
+    1 when at least one valid stored record exists.
+
 log_last_type
+    Event type of the newest valid record.
+
 log_last_sequence
+    Sequence number of the newest valid record.
+
 log_last_uptime_ms
+    Uptime timestamp stored with the newest record.
+
 log_last_data0
+    First event-specific data value.
+
 log_last_data1
+    Second event-specific data value.
 ```
 
 Current event-type values:
@@ -1164,9 +1212,7 @@ Current event-type values:
 3 = FaultCleared
 ```
 
-The meanings of `data0` and `data1` depend on the event type.
-
-For `SystemStartup`:
+For a `SystemStartup` event:
 
 ```text
 data0 = primary ResetCause enum value
@@ -1177,7 +1223,7 @@ For `FaultActivated` and `FaultCleared`:
 
 ```text
 data0 = fault bits that changed
-data1 = active-fault mask after the transition
+data1 = complete active-fault mask afterward
 ```
 
 ## UART Line Handling
@@ -1225,7 +1271,7 @@ TEMPERATURES
 FLASH STATUS
 ```
 
-Immediately sends telemetry containing flash availability, JEDEC ID, failure count, self-test state, and persistent diagnostic-log state.
+Immediately sends telemetry containing flash availability, JEDEC ID, failure count, self-test state, and diagnostic-log state.
 
 ### Flash Self-Test
 
@@ -1247,15 +1293,15 @@ OK FLASH TEST PASSED
 LOG ERASE
 ```
 
-Erases only the two 4-KiB sectors reserved for persistent diagnostic records.
+Erases the two 4-KiB sectors reserved for persistent diagnostic records.
 
-A successful erase responds:
+A successful operation responds:
 
 ```text
 OK DIAGNOSTIC LOG ERASED
 ```
 
-This command does not erase the final sector reserved for `FLASH TEST`.
+The final sector reserved for `FLASH TEST` is not affected.
 
 ### Fault Injection
 
@@ -1265,7 +1311,7 @@ INJECT TIMER FAULT
 CLEAR INJECTED FAULTS
 ```
 
-Fault activation and clearing transitions generated through fault injection are also persisted by the diagnostic logger.
+Fault activation and clearing transitions caused by diagnostic fault injection are also recorded by the persistent logger.
 
 ### Clear Counters
 
@@ -1279,7 +1325,7 @@ CLEAR
 CLEAR FAULTS
 ```
 
-Clearing the RAM-based latched-fault mask does not erase persistent diagnostic history.
+Clearing the RAM-based latched-fault mask does not erase persistent diagnostic records.
 
 ### Watchdog Test
 
@@ -1287,7 +1333,7 @@ Clearing the RAM-based latched-fault mask does not erase persistent diagnostic h
 WATCHDOG TEST
 ```
 
-After the watchdog resets the processor, the next startup record preserves the watchdog reset cause in external flash.
+The next startup after an independent-watchdog reset stores the watchdog reset cause in the persistent diagnostic log.
 
 ### Invalid Commands
 
@@ -1320,13 +1366,11 @@ flash_failures=0
 
 This confirms successful SPI communication and flash identification.
 
-When persistent logger initialization also succeeds:
+Successful diagnostic-logger initialization additionally produces:
 
 ```text
 log_initialized=1
 ```
-
-is reported.
 
 ### Self-Test
 
@@ -1366,17 +1410,23 @@ flash reads
 byte-for-byte verification
 ```
 
-The self-test operates only on `0x7FF000–0x7FFFFF`, so existing persistent diagnostic records are preserved.
+The flash self-test uses only:
+
+```text
+0x7FF000 - 0x7FFFFF
+```
+
+and therefore does not erase persistent diagnostic records.
 
 ### Persistent Log Verification
 
-A clean diagnostic-log test can begin with:
+To begin with a clean diagnostic region:
 
 ```text
 LOG ERASE
 ```
 
-Expected logger state:
+Expected state:
 
 ```text
 log_records=0
@@ -1386,7 +1436,7 @@ log_next_sequence=0
 log_last_valid=0
 ```
 
-After resetting the board once, a startup record should be present:
+After resetting the board once:
 
 ```text
 log_records=1
@@ -1395,33 +1445,34 @@ log_last_sequence=0
 log_next_sequence=1
 ```
 
-Resetting again should retain the previous record and append another startup record:
+After resetting again:
 
 ```text
 log_records=2
+log_last_type=1
 log_last_sequence=1
 log_next_sequence=2
 ```
 
-This verifies that the log survives MCU reset and reconstructs sequence state from external flash.
+This verifies that records survive MCU resets and that the next sequence number is reconstructed from external flash.
 
-A fault-transition test can use:
+A fault transition can be tested with:
 
 ```text
 INJECT BUTTON FAULT
 ```
 
-After the next health check, a `FaultActivated` event should be appended.
+After the next health check, a `FaultActivated` record should be added.
 
-Leaving the fault active should not continuously create additional records.
+Leaving the fault active for multiple health-check cycles should not continuously increase the record count.
 
-After:
+Then run:
 
 ```text
 CLEAR INJECTED FAULTS
 ```
 
-a `FaultCleared` event should be appended when the health monitor confirms the transition.
+After the next health check, a `FaultCleared` record should be appended.
 
 ### Watchdog Persistence Verification
 
@@ -1431,7 +1482,7 @@ Run:
 WATCHDOG TEST
 ```
 
-The board should reset through the independent watchdog.
+The independent watchdog should reset the board.
 
 After reboot:
 
@@ -1439,9 +1490,9 @@ After reboot:
 reset_cause=INDEPENDENT_WATCHDOG
 ```
 
-should be reported and another `SystemStartup` event should appear in the persistent log.
+should be reported.
 
-Previous diagnostic records should remain intact.
+A new `SystemStartup` record should also be present while the previously stored records remain intact.
 
 ### Flash Disconnection
 
@@ -1455,7 +1506,7 @@ flash_available=0
 
 The rest of the controller should continue operating.
 
-Persistent diagnostic logging will be unavailable while the flash device is unavailable.
+Persistent diagnostic logging is unavailable while the external flash is disconnected.
 
 External flash unavailability currently does not force the controller into a fatal state.
 
@@ -1488,7 +1539,7 @@ watchdog_failures=0
 
 The W25Q64 erase/program/read self-test has been successfully verified on hardware.
 
-Persistent records have also been observed surviving controller resets with sequence state reconstructed during startup.
+Persistent diagnostic records have also been observed surviving controller resets with sequence state reconstructed during startup.
 
 ## Future Two-Node Architecture
 
@@ -1545,17 +1596,19 @@ Loss of communication will cause the affected node to report a communication fau
 
 Board 2 will transmit its own health, actuator status, and fault information back to Board 1.
 
-Board 1 will eventually store important remote-node events in the existing persistent SPI diagnostic log.
+Board 1 will store important remote-node events in the persistent SPI diagnostic log.
 
 Potential future persistent events include:
 
-- CAN communication lost
-- CAN communication restored
-- Board 2 startup/reset
-- remote actuator fault
-- thermal safe-state entry
-- critical thermal condition
-- Board 2 heartbeat loss
+```text
+CAN communication lost
+CAN communication restored
+Board 2 startup/reset
+remote actuator fault
+thermal safe-state entry
+critical thermal condition
+Board 2 heartbeat loss
+```
 
 ## Design Principles
 
@@ -1577,20 +1630,18 @@ Potential future persistent events include:
 - Perform Write Enable before destructive flash operations
 - Handle flash page boundaries in the driver
 - Reserve a dedicated development sector for destructive testing
-- Keep persistent diagnostic storage separate from the destructive test sector
-- Use fixed-size diagnostic records
-- Include record-format metadata for persistent data
+- Keep diagnostic logging separate from the destructive flash-test sector
+- Use fixed-size persistent diagnostic records
+- Store persistent-data format information with each record
 - Validate persistent records before trusting them
-- Detect completely erased flash before appending
+- Detect erased flash before appending new records
 - Do not overwrite partially programmed or invalid NOR-flash records
-- Read back and verify newly programmed diagnostic records
-- Log fault transitions rather than repeatedly logging steady-state faults
-- Reconstruct persistent logger state after reset
-- Preserve existing diagnostic history when the logging region becomes full
-- Require an explicit command before erasing persistent diagnostic history
-- Verify programmed flash data by reading it back
+- Verify newly programmed diagnostic records through readback
+- Log fault transitions instead of repeatedly storing steady-state faults
+- Reconstruct logger state from flash after reset
+- Preserve diagnostic history when the logging region fills
+- Require explicit action before erasing diagnostic history
 - Continue operating if an external peripheral is unavailable
 - Preserve watchdog recovery behavior during peripheral operations
 - Prepare subsystem boundaries for future CAN integration
 - Use defined safe-state behavior for future distributed-node failures
-````
