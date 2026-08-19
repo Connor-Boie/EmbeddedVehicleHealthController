@@ -43,6 +43,11 @@ CommandType CommandParser::parse(
         return CommandType::LogErase;
     }
 
+    if (stringsEqual(line, "CAN TEST"))
+    {
+        return CommandType::CanTest;
+    }
+
     if (stringsEqual(
         line,
         "INJECT BUTTON FAULT"))
@@ -107,4 +112,3 @@ bool CommandParser::stringsEqual(
     return (*first == '\0') &&
            (*second == '\0');
 }
-

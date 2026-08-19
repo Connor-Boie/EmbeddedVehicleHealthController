@@ -10,6 +10,7 @@ enum class CommandType
     FlashStatus,
     FlashTest,
     LogErase,
+    CanTest,
     InjectButtonFault,
     InjectTimerFault,
     WatchdogTest,
@@ -32,3 +33,4 @@ private:
 };
 
 #endif
+

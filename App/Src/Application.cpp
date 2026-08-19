@@ -5,6 +5,7 @@
 extern "C"
 {
 extern I2C_HandleTypeDef hi2c1;
+extern CAN_HandleTypeDef hcan1;
 extern IWDG_HandleTypeDef hiwdg;
 extern SPI_HandleTypeDef hspi2;
 extern UART_HandleTypeDef huart2;
@@ -41,6 +42,31 @@ constexpr std::uint32_t
 
 constexpr std::uint32_t
     ButtonTaskTimeoutMs = 50U;
+
+constexpr std::uint32_t
+    CanVehicleHealthStatusId = 0x100U;
+
+constexpr std::uint8_t
+    CanProtocolVersion = 1U;
+
+constexpr std::uint8_t
+    CanFlagSystemHealthy = 0x01U;
+
+constexpr std::uint8_t
+    CanFlagSelectedTemperatureValid = 0x02U;
+
+constexpr std::uint8_t
+    CanFlagSensorAAvailable = 0x04U;
+
+constexpr std::uint8_t
+    CanFlagSensorBAvailable = 0x08U;
+
+constexpr std::int16_t
+    CanInvalidTemperatureDeciCelsius =
+        static_cast<std::int16_t>(-32768);
+
+constexpr std::uint32_t
+    CanLoopbackReceiveTimeoutMs = 20U;
 
 constexpr std::uint32_t
     FlashTestSectorAddress =
@@ -83,6 +109,9 @@ Application::Application()
 
       diagnosticLogger_{
           &flash_},
+
+      canBus_{
+          &hcan1},
 
       uartReceiver_{},
 
@@ -232,6 +261,12 @@ void Application::initialize()
                 startupLogged);
         }
     }
+
+    const bool canInitialized =
+        canBus_.initialize();
+
+    static_cast<void>(
+        canInitialized);
 
     refreshWatchdog();
 }
@@ -610,6 +645,15 @@ void Application::handleCommand(
 
             sendTelemetry(
                 HAL_GetTick());
+
+            break;
+        }
+
+        case CommandType::CanTest:
+        {
+            ++validCommandCount_;
+
+            runCanLoopbackTest();
 
             break;
         }
@@ -1142,10 +1186,217 @@ void Application::runFlashSelfTest()
         sent);
 }
 
+void Application::runCanLoopbackTest()
+{
+    if (!canBus_.initialized())
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR CAN NOT INITIALIZED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    const CanFrame transmittedFrame =
+        buildVehicleHealthFrame();
+
+    if (!canBus_.send(
+            transmittedFrame))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR CAN TRANSMIT FAILED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    const std::uint32_t startTimeMs =
+        HAL_GetTick();
+
+    while (!canBus_.messagePending())
+    {
+        if ((HAL_GetTick() -
+             startTimeMs) >=
+            CanLoopbackReceiveTimeoutMs)
+        {
+            const bool sent =
+                telemetry_.sendText(
+                    "ERROR CAN LOOPBACK TIMEOUT");
+
+            static_cast<void>(
+                sent);
+
+            return;
+        }
+    }
+
+    CanFrame receivedFrame{};
+
+    if (!canBus_.receive(
+            receivedFrame))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR CAN RECEIVE FAILED");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    if (!framesEqual(
+            transmittedFrame,
+            receivedFrame))
+    {
+        const bool sent =
+            telemetry_.sendText(
+                "ERROR CAN LOOPBACK DATA MISMATCH");
+
+        static_cast<void>(
+            sent);
+
+        return;
+    }
+
+    const bool sent =
+        telemetry_.sendText(
+            "OK CAN LOOPBACK TEST PASSED");
+
+    static_cast<void>(
+        sent);
+}
+
+CanFrame
+Application::buildVehicleHealthFrame() const
+{
+    CanFrame frame{};
+
+    frame.id =
+        CanVehicleHealthStatusId;
+
+    frame.length = 8U;
+
+    frame.data[0] =
+        CanProtocolVersion;
+
+    std::uint8_t statusFlags = 0U;
+
+    if (systemHealthy_)
+    {
+        statusFlags |=
+            CanFlagSystemHealthy;
+    }
+
+    if (temperatureHealthMonitor_
+            .selectedTemperatureValid())
+    {
+        statusFlags |=
+            CanFlagSelectedTemperatureValid;
+    }
+
+    if (temperatureSensorA_.available())
+    {
+        statusFlags |=
+            CanFlagSensorAAvailable;
+    }
+
+    if (temperatureSensorB_.available())
+    {
+        statusFlags |=
+            CanFlagSensorBAvailable;
+    }
+
+    frame.data[1] =
+        statusFlags;
+
+    std::int16_t temperatureDeciCelsius =
+        CanInvalidTemperatureDeciCelsius;
+
+    if (temperatureHealthMonitor_
+            .selectedTemperatureValid())
+    {
+        temperatureDeciCelsius =
+            static_cast<std::int16_t>(
+                temperatureHealthMonitor_
+                    .selectedTemperatureMilliCelsius() /
+                100);
+    }
+
+    const std::uint16_t
+        encodedTemperature =
+            static_cast<std::uint16_t>(
+                temperatureDeciCelsius);
+
+    frame.data[2] =
+        static_cast<std::uint8_t>(
+            encodedTemperature &
+            0x00FFU);
+
+    frame.data[3] =
+        static_cast<std::uint8_t>(
+            (encodedTemperature >> 8U) &
+            0x00FFU);
+
+    const std::uint32_t faultMask =
+        faultManager_.activeFaultMask();
+
+    frame.data[4] =
+        static_cast<std::uint8_t>(
+            faultMask &
+            0x000000FFU);
+
+    frame.data[5] =
+        static_cast<std::uint8_t>(
+            (faultMask >> 8U) &
+            0x000000FFU);
+
+    frame.data[6] =
+        static_cast<std::uint8_t>(
+            (faultMask >> 16U) &
+            0x000000FFU);
+
+    frame.data[7] =
+        static_cast<std::uint8_t>(
+            (faultMask >> 24U) &
+            0x000000FFU);
+
+    return frame;
+}
+
+bool Application::framesEqual(
+    const CanFrame& first,
+    const CanFrame& second)
+{
+    if ((first.id != second.id) ||
+        (first.length != second.length))
+    {
+        return false;
+    }
+
+    for (std::uint8_t index = 0U;
+         index < first.length;
+         ++index)
+    {
+        if (first.data[index] !=
+            second.data[index])
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool Application::readUserButtonPressed() const
 {
     return BSP_PB_GetState(
         BUTTON_USER) ==
         GPIO_PIN_RESET;
 }
-

@@ -2,6 +2,7 @@
 #define APPLICATION_HPP
 
 #include "ButtonDebouncer.hpp"
+#include "CanBus.hpp"
 #include "CommandParser.hpp"
 #include "DigitalOutput.hpp"
 #include "DiagnosticLogger.hpp"
@@ -147,6 +148,15 @@ private:
         std::uint32_t currentTimeMs);
 
     void runFlashSelfTest();
+    void runCanLoopbackTest();
+
+    [[nodiscard]] CanFrame
+        buildVehicleHealthFrame() const;
+
+    [[nodiscard]] static bool
+        framesEqual(
+            const CanFrame& first,
+            const CanFrame& second);
 
     [[nodiscard]] bool
         readUserButtonPressed() const;
@@ -167,6 +177,8 @@ private:
 
     W25q64 flash_;
     DiagnosticLogger diagnosticLogger_;
+
+    CanBus canBus_;
 
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
@@ -202,14 +214,15 @@ private:
     std::uint32_t
         lastButtonTaskTimeMs_{0U};
 
-    std::uint32_t previousLoggedFaultMask_{0U};
-
     bool systemHealthy_{true};
     bool hardwareTimerActive_{false};
     bool watchdogRefreshEnabled_{true};
+
+    std::uint32_t previousLoggedFaultMask_{0U};
 
     bool flashTestRun_{false};
     bool flashTestPassed_{false};
 };
 
 #endif
+

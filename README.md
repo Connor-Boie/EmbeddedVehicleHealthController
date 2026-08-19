@@ -1,6 +1,6 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, provides external SPI flash storage, processes serial commands, and transmits system diagnostics through UART.
+A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, validates CAN communication through internal bxCAN loopback, processes serial commands, and transmits system diagnostics through UART.
 
 The project uses STM32CubeMX-generated hardware initialization together with a separate application-owned C++ layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
 
@@ -41,13 +41,15 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Destructive reserved-sector flash self-test
 - Persistent structured diagnostic event logging
 - Persistent startup/reset-cause records
-- Persistent fault-activation records
-- Persistent fault-clearing records
+- Persistent fault-activation and fault-clearing records
 - Diagnostic-log reconstruction after reset
 - Diagnostic-record checksum validation
-- Invalid and erased flash-record detection
-- Persistent diagnostic sequence numbering
-- Explicit diagnostic-log erase command
+- CAN1 bxCAN peripheral configuration
+- 500-kbit/s CAN bit timing
+- Standard 11-bit CAN frame transmission and reception
+- CAN receive-filter configuration
+- Internal CAN loopback self-test without an external transceiver
+- Vehicle-health CAN frame serialization
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
@@ -232,31 +234,6 @@ Erase operations occur at sector granularity, so erasing one sector affects all 
 
 `W25q64::program()` automatically splits writes that cross 256-byte page boundaries.
 
-### Current Flash Memory Map
-
-The first two sectors are reserved for persistent diagnostic logging.
-
-```text
-0x000000
-+--------------------------------+
-| Diagnostic log sector 0        |
-| 0x000000 - 0x000FFF            |
-+--------------------------------+
-| Diagnostic log sector 1        |
-| 0x001000 - 0x001FFF            |
-+--------------------------------+
-|                                |
-| Currently unused flash         |
-|                                |
-+--------------------------------+
-| Reserved FLASH TEST sector     |
-| 0x7FF000 - 0x7FFFFF            |
-+--------------------------------+
-0x7FFFFF
-```
-
-The diagnostic logger and destructive flash self-test therefore operate in separate regions.
-
 ## W25Q64 Driver
 
 The `W25q64` C++ class provides:
@@ -377,9 +354,7 @@ The hardware flash self-test has been successfully verified using the connected 
 
 ## Persistent Diagnostic Logging
 
-The `DiagnosticLogger` class provides structured nonvolatile diagnostic-event storage using the existing `W25q64` driver.
-
-The logger reserves the first two 4-KiB flash sectors:
+`DiagnosticLogger` stores structured nonvolatile event records in the first two W25Q64 sectors.
 
 ```text
 Start address: 0x000000
@@ -387,11 +362,7 @@ End address:   0x001FFF
 Region size:   8192 bytes
 ```
 
-The final sector beginning at `0x7FF000` remains reserved exclusively for the destructive `FLASH TEST` command.
-
-### Diagnostic Record Format
-
-Each diagnostic record occupies exactly 32 bytes.
+Each diagnostic record is 32 bytes.
 
 ```text
 Offset   Size   Field
@@ -408,42 +379,9 @@ Offset   Size   Field
 Total    32 bytes
 ```
 
-The fixed-size record format provides deterministic storage without dynamic allocation.
+The two-sector region holds 256 records.
 
-A compile-time size check ensures that changes to the C++ structure cannot silently change the persistent record size.
-
-Because the flash page size is 256 bytes:
-
-```text
-256 / 32 = 8 records per page
-```
-
-Because each sector is 4096 bytes:
-
-```text
-4096 / 32 = 128 records per sector
-```
-
-The two-sector logging region therefore provides:
-
-```text
-128 × 2 = 256 records
-```
-
-### Record Identification
-
-Each valid record contains a fixed magic value and format version.
-
-```text
-Magic:          0x474C5645
-Format version: 1
-```
-
-The magic value helps distinguish diagnostic records from unrelated flash contents.
-
-The format version provides a mechanism for future firmware to recognize changes to the persistent-data layout.
-
-### Current Event Types
+Current event types are:
 
 ```text
 1 = SystemStartup
@@ -451,296 +389,121 @@ The format version provides a mechanism for future firmware to recognize changes
 3 = FaultCleared
 ```
 
-Future event types can extend the same record structure for events such as CAN communication failures and remote actuator faults.
+The logger scans the complete region during startup and classifies each slot as erased, valid, or invalid. The scan reconstructs the number of valid records, the latest valid sequence, the next sequence number, the next erased write location, and whether the region is full.
 
-### System Startup Records
-
-After the W25Q64 and diagnostic logger initialize successfully, the application appends a `SystemStartup` event.
-
-For startup records:
+A startup record stores:
 
 ```text
 data0 = primary ResetCause enum value
 data1 = complete reset-cause mask
 ```
 
-`data0` stores one selected primary reset cause.
-
-`data1` is a bit mask that preserves all reset flags detected during startup.
-
-For example:
+Fault-transition records store:
 
 ```text
-log_last_type=1
-log_last_data0=0x00000005
-log_last_data1=0x00000014
+data0 = fault bits that changed
+data1 = complete active-fault mask afterward
 ```
 
-indicates a `SystemStartup` record where the primary reset cause was the independent watchdog and the complete reset-cause mask contained multiple reset flags.
+The logger does not automatically erase old history when full. `LOG ERASE` explicitly erases only the two diagnostic sectors. The final sector at `0x7FF000` remains reserved for `FLASH TEST`.
 
-### Fault Transition Records
+## CAN1 Internal Loopback Configuration
 
-Fault events are logged only when the active-fault state changes.
+CAN1 is introduced first in internal loopback mode so the bxCAN controller, filters, message formatting, transmit path, and receive path can be verified before connecting the external CAN transceivers and second STM32 node.
 
-When one or more faults become active:
+The current CAN1 configuration uses:
 
 ```text
-eventType = FaultActivated
-data0     = fault bits that became active
-data1     = complete active-fault mask afterward
+Mode:                    Loopback
+CAN peripheral clock:    42 MHz
+Prescaler:               6
+Bit Segment 1:           11 TQ
+Bit Segment 2:           2 TQ
+Synchronization Jump:    1 TQ
+Bit rate:                 500 kbit/s
 ```
 
-When one or more faults clear:
+The bit rate is calculated from:
 
 ```text
-eventType = FaultCleared
-data0     = fault bits that cleared
-data1     = complete active-fault mask afterward
+Total time quanta = 1 + 11 + 2 = 14
+
+42,000,000 / (6 × 14)
+= 500,000 bits/second
 ```
 
-For example:
+CAN1 uses the STM32 alternate-function pins:
 
 ```text
-eventType = FaultActivated
-data0     = 0x00000004
-data1     = 0x00000004
+PA11 = CAN1_RX
+PA12 = CAN1_TX
 ```
 
-means the Sensor A unavailable fault became active and was the only active fault afterward.
+No external transceiver or CANH/CANL wiring is required while CAN1 is in internal loopback mode. Physical bus wiring is deferred until CAN1 is switched to normal mode for two-board communication.
 
-If it later clears:
+### CAN Frame Abstraction
+
+`CanBus` provides a small application-owned wrapper around the STM32 HAL bxCAN interface.
+
+The application uses:
 
 ```text
-eventType = FaultCleared
-data0     = 0x00000004
-data1     = 0x00000000
+CanFrame
+├── id
+├── length
+└── data[8]
 ```
 
-the record indicates that the Sensor A unavailable fault cleared and no active faults remained.
-
-Logging only transitions prevents a persistent fault from generating another flash record every health-monitoring cycle.
-
-### Sequence Numbers
-
-Every successfully appended diagnostic record receives a sequence number.
-
-A normal sequence begins:
+The first message definition is Board 1 Vehicle Health Status.
 
 ```text
-0
-1
-2
-3
-4
-5
-...
+Standard CAN ID: 0x100
+Payload length:  8 bytes
 ```
 
-Sequence numbers describe logical event order rather than physical flash-slot numbers.
-
-During startup, the logger scans existing valid records and reconstructs the sequence state.
-
-For example:
+Payload layout:
 
 ```text
-log_last_sequence=5
-log_next_sequence=6
+Byte 0       Protocol version
+Byte 1       Status flags
+Bytes 2-3    Selected temperature in 0.1°C, signed 16-bit little-endian
+Bytes 4-7    Active fault mask, unsigned 32-bit little-endian
 ```
 
-means sequence 5 is the newest valid event and sequence 6 will be assigned to the next successfully appended event.
-
-Sequence numbering therefore continues across MCU resets.
-
-### Uptime Timestamp
-
-Each diagnostic record stores:
+Status-flag bits:
 
 ```text
-uptimeMs
+Bit 0 = system healthy
+Bit 1 = selected temperature valid
+Bit 2 = Sensor A available
+Bit 3 = Sensor B available
 ```
 
-using the current `HAL_GetTick()` value.
+When no trusted selected temperature is available, the encoded temperature uses the signed 16-bit sentinel value `0x8000`.
 
-This indicates how long the current boot had been running when the event occurred.
+### CAN Receive Filter
 
-For example:
+The current loopback test configures one 32-bit ID-mask filter assigned to receive FIFO 0. Both the identifier and mask are zero, so the filter accepts all CAN identifiers during bring-up.
 
-```text
-log_last_uptime_ms=65
-```
+This broad filter is intentional for the first CAN test. A later two-node lesson can narrow accepted identifiers once Board 1 and Board 2 message IDs are finalized.
 
-means the event was recorded approximately 65 milliseconds after that boot began.
-
-The uptime counter restarts after reset, while persistent sequence numbers preserve event ordering across multiple boots.
-
-### Record Checksum
-
-Each record contains a 32-bit checksum calculated from the other record fields.
-
-The implementation uses an FNV-1a-style checksum.
-
-A record is accepted as valid only when:
-
-```text
-magic is correct
-AND
-format version is correct
-AND
-checksum matches
-```
-
-This allows the logger to reject incomplete or corrupted records.
-
-The checksum is an integrity mechanism for the bench prototype and is not presented as a validated safety-certified error-detection mechanism.
-
-### Erased-State Detection
-
-An erased NOR-flash byte reads as:
-
-```text
-0xFF
-```
-
-An unused diagnostic-record slot therefore contains only erased values.
-
-For a 32-bit field, the erased value is:
-
-```text
-0xFFFFFFFF
-```
-
-A record slot is considered available only when every field remains erased.
-
-### Startup Log Recovery
-
-`DiagnosticLogger::initialize()` scans the complete two-sector logging region when the application starts.
-
-Each record slot is classified as:
-
-```text
-ERASED
-VALID
-INVALID
-```
-
-An erased slot is available for a future append.
-
-A valid slot contains the expected:
-
-```text
-magic
-format version
-checksum
-```
-
-An invalid slot contains programmed data but does not pass record validation.
-
-Invalid slots are not overwritten because NOR flash cannot safely change programmed `0` bits back to `1` without a sector erase.
-
-The startup scan reconstructs:
-
-- valid record count
-- invalid record count
-- latest valid record
-- next sequence number
-- next erased write address
-- full/not-full state
-
-This allows the logger to recover entirely from persistent flash contents after the MCU's volatile RAM state has been lost.
-
-### Append Behavior
-
-A new event is stored using the following sequence:
-
-```text
-Find next erased slot
-        ↓
-Construct diagnostic record
-        ↓
-Assign sequence number
-        ↓
-Calculate checksum
-        ↓
-Program through W25q64
-        ↓
-Read record back
-        ↓
-Validate stored record
-        ↓
-Update logger state
-```
-
-The application does not assume that a successful SPI programming call automatically means the persistent record is correct.
-
-The record is read back and validated before the append is considered complete.
-
-### Partially Written Records
-
-If power is lost during a flash programming operation, the affected record may become partially programmed.
-
-Such a slot can be:
-
-```text
-not erased
-AND
-not valid
-```
-
-During the next startup scan it is counted as an invalid record.
-
-The logger does not program over that slot.
-
-Instead, it searches for a later completely erased slot.
-
-This avoids treating partially programmed NOR flash as safe writable storage.
-
-### Log Full Behavior
-
-The logger intentionally does not erase old history automatically.
-
-When the logging region has no erased record slots remaining:
-
-```text
-log_full=1
-```
-
-New append requests stop rather than silently destroying older diagnostic evidence.
-
-A future implementation could add circular-sector recycling or wear-leveling if the application requirements justify the additional complexity.
-
-### Log Erase
+### CAN Loopback Test
 
 The UART command:
 
 ```text
-LOG ERASE
+CAN TEST
 ```
 
-explicitly erases the two sectors reserved for diagnostic records:
+builds a current vehicle-health frame, transmits it through CAN1, waits for the internally looped-back frame to reach receive FIFO 0, reads it, and compares the received identifier, length, and payload byte-for-byte with the transmitted frame.
+
+A passing test responds:
 
 ```text
-0x000000 - 0x001FFF
+OK CAN LOOPBACK TEST PASSED
 ```
 
-A successful operation responds:
-
-```text
-OK DIAGNOSTIC LOG ERASED
-```
-
-After the erase:
-
-```text
-log_records=0
-log_full=0
-log_invalid_records=0
-log_next_sequence=0
-log_last_valid=0
-```
-
-The reserved `FLASH TEST` sector is not affected.
-
-A new `SystemStartup` record is created the next time the controller resets.
+The test uses a bounded 20-ms receive timeout rather than waiting indefinitely.
 
 ## Development Tools
 
@@ -759,6 +522,7 @@ EmbeddedVehicleHealthController/
 │   │   ├── Application.hpp
 │   │   ├── ButtonDebouncer.hpp
 │   │   ├── CommandParser.hpp
+│   │   ├── CanBus.hpp
 │   │   ├── DiagnosticLogger.hpp
 │   │   ├── DigitalOutput.hpp
 │   │   ├── FaultInjector.hpp
@@ -776,6 +540,7 @@ EmbeddedVehicleHealthController/
 │       ├── Application.cpp
 │       ├── ButtonDebouncer.cpp
 │       ├── CommandParser.cpp
+│       ├── CanBus.cpp
 │       ├── DiagnosticLogger.cpp
 │       ├── DigitalOutput.cpp
 │       ├── FaultInjector.cpp
@@ -809,18 +574,18 @@ STM32CubeIDE metadata and generated build-output directories are omitted from th
                      │          │
                  MCP9808 B      │
                                 ▼
-                     TemperatureHealthMonitor
+                    TemperatureHealthMonitor
                                 │
                                 ▼
-                           FaultManager
+                          FaultManager
                                 │
-               ┌────────────────┼──────────────────┐
-               │                │                  │
-               ▼                ▼                  ▼
-             UART      DiagnosticLogger       Future CAN
-                                │
-                                ▼
-                              W25Q64
+             ┌──────────────────┼──────────────────┐
+             │                  │                  │
+             ▼                  ▼                  ▼
+           UART              SPI Flash        Future CAN
+                               │
+                               ▼
+                            W25Q64
 ```
 
 The C++ application layer currently contains:
@@ -838,29 +603,11 @@ Application
 ├── TemperatureHealthMonitor
 ├── W25q64
 ├── DiagnosticLogger
+├── CanBus
 ├── UartCommandReceiver
 ├── CommandParser
 ├── UartTelemetry
 └── Watchdog
-```
-
-The persistent logging dependency path is:
-
-```text
-Application
-    │
-    │ decides which events should be stored
-    ▼
-DiagnosticLogger
-    │
-    │ manages record format, sequencing,
-    │ scanning, validation, and append behavior
-    ▼
-W25q64
-    │
-    │ performs raw flash operations
-    ▼
-SPI2 / W25Q64
 ```
 
 ## Cooperative Scheduling
@@ -1003,8 +750,6 @@ The watchdog is configured for an approximately 2-second timeout using the STM32
 
 Flash self-test operations refresh the watchdog between destructive flash operations so flash testing does not interfere with watchdog recovery behavior.
 
-After a watchdog reset, the following boot creates a persistent `SystemStartup` record containing the independent-watchdog reset information.
-
 ## Reset-Cause Detection
 
 Telemetry reports:
@@ -1029,15 +774,6 @@ UNKNOWN
 
 When both power-on and brownout flags are present during ordinary startup, power-on is given higher reporting priority.
 
-The persistent startup record stores both:
-
-```text
-primary reset cause
-complete reset-cause mask
-```
-
-This preserves more information than storing only the selected primary cause.
-
 ## Fault Monitoring
 
 Fault bits:
@@ -1054,8 +790,6 @@ Bit 5 — 0x00000020 — Overtemperature
 Both active and latched masks are maintained.
 
 A degraded temperature mode can still provide a valid selected temperature while the corresponding unavailable-sensor fault keeps the overall system health state faulted.
-
-Changes to the active-fault mask are also stored as persistent diagnostic events.
 
 ## UART Telemetry
 
@@ -1137,95 +871,6 @@ rx_errors
 
 Telemetry uses a fixed 1280-byte buffer and a bounded 150-ms UART transmission timeout.
 
-### Diagnostic-Log Telemetry
-
-Example diagnostic-log telemetry:
-
-```text
-log_initialized=1
-log_records=6
-log_capacity=256
-log_full=0
-log_invalid_records=0
-log_failures=0
-log_next_sequence=6
-log_last_valid=1
-log_last_type=1
-log_last_sequence=5
-log_last_uptime_ms=65
-log_last_data0=0x00000005
-log_last_data1=0x00000014
-```
-
-Logger-state fields:
-
-```text
-log_initialized
-    1 when the persistent logger initialized successfully.
-
-log_records
-    Number of valid records currently stored.
-
-log_capacity
-    Maximum number of diagnostic-record slots.
-
-log_full
-    1 when no erased record slots remain.
-
-log_invalid_records
-    Number of programmed slots that failed record validation.
-
-log_failures
-    Number of logger read, write, or verification failures.
-
-log_next_sequence
-    Sequence number assigned to the next successfully appended record.
-```
-
-Latest-record fields:
-
-```text
-log_last_valid
-    1 when at least one valid stored record exists.
-
-log_last_type
-    Event type of the newest valid record.
-
-log_last_sequence
-    Sequence number of the newest valid record.
-
-log_last_uptime_ms
-    Uptime timestamp stored with the newest record.
-
-log_last_data0
-    First event-specific data value.
-
-log_last_data1
-    Second event-specific data value.
-```
-
-Current event-type values:
-
-```text
-1 = SystemStartup
-2 = FaultActivated
-3 = FaultCleared
-```
-
-For a `SystemStartup` event:
-
-```text
-data0 = primary ResetCause enum value
-data1 = complete reset-cause mask
-```
-
-For `FaultActivated` and `FaultCleared`:
-
-```text
-data0 = fault bits that changed
-data1 = complete active-fault mask afterward
-```
-
 ## UART Line Handling
 
 Either character completes an input command:
@@ -1271,7 +916,7 @@ TEMPERATURES
 FLASH STATUS
 ```
 
-Immediately sends telemetry containing flash availability, JEDEC ID, failure count, self-test state, and diagnostic-log state.
+Immediately sends telemetry containing flash availability, JEDEC ID, failure count, and self-test state.
 
 ### Flash Self-Test
 
@@ -1293,15 +938,21 @@ OK FLASH TEST PASSED
 LOG ERASE
 ```
 
-Erases the two 4-KiB sectors reserved for persistent diagnostic records.
+Erases the two 4-KiB sectors reserved for persistent diagnostic records without affecting the final `FLASH TEST` sector.
 
-A successful operation responds:
+### CAN Loopback Test
 
 ```text
-OK DIAGNOSTIC LOG ERASED
+CAN TEST
 ```
 
-The final sector reserved for `FLASH TEST` is not affected.
+Transmits one Board 1 Vehicle Health Status frame through CAN1 internal loopback and verifies that the received identifier, payload length, and all eight payload bytes match the transmitted frame.
+
+A successful test responds:
+
+```text
+OK CAN LOOPBACK TEST PASSED
+```
 
 ### Fault Injection
 
@@ -1310,8 +961,6 @@ INJECT BUTTON FAULT
 INJECT TIMER FAULT
 CLEAR INJECTED FAULTS
 ```
-
-Fault activation and clearing transitions caused by diagnostic fault injection are also recorded by the persistent logger.
 
 ### Clear Counters
 
@@ -1325,15 +974,11 @@ CLEAR
 CLEAR FAULTS
 ```
 
-Clearing the RAM-based latched-fault mask does not erase persistent diagnostic records.
-
 ### Watchdog Test
 
 ```text
 WATCHDOG TEST
 ```
-
-The next startup after an independent-watchdog reset stores the watchdog reset cause in the persistent diagnostic log.
 
 ### Invalid Commands
 
@@ -1365,12 +1010,6 @@ flash_failures=0
 ```
 
 This confirms successful SPI communication and flash identification.
-
-Successful diagnostic-logger initialization additionally produces:
-
-```text
-log_initialized=1
-```
 
 ### Self-Test
 
@@ -1410,89 +1049,23 @@ flash reads
 byte-for-byte verification
 ```
 
-The flash self-test uses only:
-
-```text
-0x7FF000 - 0x7FFFFF
-```
-
-and therefore does not erase persistent diagnostic records.
-
-### Persistent Log Verification
-
-To begin with a clean diagnostic region:
-
-```text
-LOG ERASE
-```
-
-Expected state:
-
-```text
-log_records=0
-log_full=0
-log_invalid_records=0
-log_next_sequence=0
-log_last_valid=0
-```
-
-After resetting the board once:
-
-```text
-log_records=1
-log_last_type=1
-log_last_sequence=0
-log_next_sequence=1
-```
-
-After resetting again:
-
-```text
-log_records=2
-log_last_type=1
-log_last_sequence=1
-log_next_sequence=2
-```
-
-This verifies that records survive MCU resets and that the next sequence number is reconstructed from external flash.
-
-A fault transition can be tested with:
-
-```text
-INJECT BUTTON FAULT
-```
-
-After the next health check, a `FaultActivated` record should be added.
-
-Leaving the fault active for multiple health-check cycles should not continuously increase the record count.
-
-Then run:
-
-```text
-CLEAR INJECTED FAULTS
-```
-
-After the next health check, a `FaultCleared` record should be appended.
-
-### Watchdog Persistence Verification
+### CAN Loopback Verification
 
 Run:
 
 ```text
-WATCHDOG TEST
+CAN TEST
 ```
 
-The independent watchdog should reset the board.
-
-After reboot:
+Expected response:
 
 ```text
-reset_cause=INDEPENDENT_WATCHDOG
+OK CAN LOOPBACK TEST PASSED
 ```
 
-should be reported.
+A passing loopback test verifies the CAN1 peripheral startup path, receive filter, transmit mailbox path, internal loopback path, receive FIFO 0 path, standard identifier handling, payload serialization, and byte-for-byte frame verification.
 
-A new `SystemStartup` record should also be present while the previously stored records remain intact.
+The external SN65HVD230 transceivers and physical CANH/CANL bus are not part of this internal-loopback test.
 
 ### Flash Disconnection
 
@@ -1506,8 +1079,6 @@ flash_available=0
 
 The rest of the controller should continue operating.
 
-Persistent diagnostic logging is unavailable while the external flash is disconnected.
-
 External flash unavailability currently does not force the controller into a fatal state.
 
 ## Current Verified Telemetry Example
@@ -1520,30 +1091,20 @@ temp_a_available=1
 temp_b_available=1
 temp_mode=REDUNDANT
 temp_selected_valid=1
-
 flash_available=1
 flash_jedec_id=0xEF4017
 flash_failures=0
-
-log_initialized=1
-log_capacity=256
-log_full=0
-log_invalid_records=0
-log_failures=0
-
 healthy=1
 timer_active=1
 active_faults=0x00000000
 watchdog_failures=0
 ```
 
-The W25Q64 erase/program/read self-test has been successfully verified on hardware.
-
-Persistent diagnostic records have also been observed surviving controller resets with sequence state reconstructed during startup.
+The W25Q64 erase/program/read self-test has also been verified successfully on hardware. Persistent diagnostic records have been verified across resets. CAN1 internal loopback is the current CAN bring-up target before physical two-node communication.
 
 ## Future Two-Node Architecture
 
-The current controller will become Board 1 of a distributed CAN system.
+The current controller will become Board 1 of a distributed CAN system. CAN1 is first validated locally in internal loopback mode before the physical two-node bus is introduced.
 
 ```text
 BOARD 1 — Vehicle Health Controller
@@ -1556,7 +1117,7 @@ BOARD 1 — Vehicle Health Controller
         └── CAN
              │
              │
-           CAN bus
+          CAN bus
              │
              ▼
 BOARD 2 — Thermal / Actuator Controller
@@ -1596,19 +1157,7 @@ Loss of communication will cause the affected node to report a communication fau
 
 Board 2 will transmit its own health, actuator status, and fault information back to Board 1.
 
-Board 1 will store important remote-node events in the persistent SPI diagnostic log.
-
-Potential future persistent events include:
-
-```text
-CAN communication lost
-CAN communication restored
-Board 2 startup/reset
-remote actuator fault
-thermal safe-state entry
-critical thermal condition
-Board 2 heartbeat loss
-```
+Board 1 will eventually store important remote-node events in persistent SPI flash.
 
 ## Design Principles
 
@@ -1630,18 +1179,16 @@ Board 2 heartbeat loss
 - Perform Write Enable before destructive flash operations
 - Handle flash page boundaries in the driver
 - Reserve a dedicated development sector for destructive testing
-- Keep diagnostic logging separate from the destructive flash-test sector
-- Use fixed-size persistent diagnostic records
-- Store persistent-data format information with each record
-- Validate persistent records before trusting them
-- Detect erased flash before appending new records
-- Do not overwrite partially programmed or invalid NOR-flash records
-- Verify newly programmed diagnostic records through readback
-- Log fault transitions instead of repeatedly storing steady-state faults
-- Reconstruct logger state from flash after reset
-- Preserve diagnostic history when the logging region fills
-- Require explicit action before erasing diagnostic history
+- Keep persistent diagnostic logging separate from the destructive flash-test sector
+- Use fixed-size persistent records with integrity validation
+- Log fault transitions rather than repeatedly storing steady-state faults
+- Reconstruct persistent logger state from flash after reset
+- Validate CAN locally in internal loopback before adding physical bus variables
+- Keep CAN message definitions explicit and fixed-width
+- Keep the low-level CAN transport separate from application message policy
+- Use bounded waits for explicit diagnostic self-tests
+- Verify programmed flash data by reading it back
 - Continue operating if an external peripheral is unavailable
 - Preserve watchdog recovery behavior during peripheral operations
 - Prepare subsystem boundaries for future CAN integration
-- Use defined safe-state behavior for future distributed-node failures
+- Use defined safe-state behavior for future distributed-node failures````
