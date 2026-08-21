@@ -1,10 +1,10 @@
 # STM32CubeIDE build output
-Debug/
-Release/
+*/Debug/
+*/Release/
 
 # CMake and generated build directories
-build/
-cmake-build-*/
+*/build/
+*/cmake-build-*/
 
 # Compiled firmware and intermediate files
 *.o
@@ -33,8 +33,8 @@ cmake-build-*/
 
 # IDE-local metadata
 .metadata/
-.settings/language.settings.xml
-.settings/stm32cubeide.project.prefs
+*/.settings/language.settings.xml
+*/.settings/stm32cubeide.project.prefs
 
 # Debug launch configurations may contain machine-local paths
 *.launch
