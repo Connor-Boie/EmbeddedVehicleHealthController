@@ -135,7 +135,6 @@ private:
         std::uint32_t currentTimeMs);
 
     void clearApplicationCounters();
-
     void updateHeartbeat();
 
     void performHealthCheck(
@@ -148,15 +147,12 @@ private:
         std::uint32_t currentTimeMs);
 
     void runFlashSelfTest();
-    void runCanLoopbackTest();
+
+    [[nodiscard]] bool
+        transmitVehicleHealthFrame();
 
     [[nodiscard]] CanFrame
         buildVehicleHealthFrame() const;
-
-    [[nodiscard]] static bool
-        framesEqual(
-            const CanFrame& first,
-            const CanFrame& second);
 
     [[nodiscard]] bool
         readUserButtonPressed() const;
@@ -190,6 +186,7 @@ private:
     PeriodicTimer temperatureSampleTimer_;
     PeriodicTimer telemetryTimer_;
     PeriodicTimer watchdogRefreshTimer_;
+    PeriodicTimer canTransmitTimer_;
 
     char receivedLine_[
         UartCommandReceiver::LineCapacity]{};

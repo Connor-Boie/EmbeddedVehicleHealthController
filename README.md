@@ -1,12 +1,28 @@
 # Embedded Vehicle Health Controller
 
-A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, validates CAN communication through internal bxCAN loopback, processes serial commands, and transmits system diagnostics through UART.
+A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that models a distributed vehicle-health and thermal-control system across two STM32 nodes.
 
-The project uses STM32CubeMX-generated hardware initialization together with a separate application-owned C++ layer. Generated C code communicates with the C++ application through a small C-compatible bridge.
+Board 1 monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and prepares periodic vehicle-health status frames for CAN transmission.
 
-The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors simulate redundant vehicle battery-temperature channels in a vehicle health-monitoring system.
+Board 2 provides the foundation for a remote thermal/actuator-control node. It initializes CAN in normal mode, receives and decodes the shared Vehicle Health Status message format, and reports decoded remote status through USART2.
+
+The project uses STM32CubeMX-generated hardware initialization together with separate application-owned C++ layers. Generated C code communicates with each board's C++ application through a small C-compatible bridge.
+
+The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors on Board 1 simulate redundant vehicle battery-temperature channels. Internal CAN loopback has been verified on Board 1. The two-node normal-mode CAN software framework builds successfully for both boards; physical CAN communication is awaiting final validation with replacement transceiver hardware.
 
 ## Current Features
+
+### Shared System Architecture
+
+- Separate STM32CubeIDE/CubeMX firmware projects for Board 1 and Board 2
+- Shared CAN protocol definitions under `Shared/Inc`
+- Fixed-width CAN message fields and explicit byte layout
+- Separate generated STM32 code from application-owned C++
+- C-compatible bridge between generated C startup code and C++ applications
+- No dynamic allocation in the application design
+- Independent buildable firmware targets for both nodes
+
+### Board 1 — Vehicle Health Controller
 
 - C++ application layer running above STM32 HAL initialization
 - GPIO status heartbeat through a reusable `DigitalOutput` abstraction
@@ -48,8 +64,11 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - 500-kbit/s CAN bit timing
 - Standard 11-bit CAN frame transmission and reception
 - CAN receive-filter configuration
-- Internal CAN loopback self-test without an external transceiver
+- Verified internal CAN loopback
 - Vehicle-health CAN frame serialization
+- CAN1 normal-mode configuration for physical two-node communication
+- Periodic Vehicle Health Status transmission framework
+- Manual `CAN TEST` transmit command
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
 - Fixed-capacity UART receive ring buffer
@@ -59,20 +78,52 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Runtime diagnostic counters
 - UART overflow, dropped-byte, and receive-error diagnostics
 
+### Board 2 — Thermal / Actuator Controller
+
+- Separate STM32 NUCLEO-F446RE firmware project
+- C++ application layer above STM32 HAL initialization
+- C-compatible bridge from generated `main.c` to the C++ application
+- CAN1 normal-mode initialization
+- Matching 500-kbit/s CAN bit timing
+- Standard 11-bit CAN receive support
+- Receive FIFO 0 polling
+- Shared `0x100` Vehicle Health Status protocol decoding
+- Protocol-version validation
+- Payload-length validation
+- Status-flag decoding
+- Signed little-endian temperature decoding
+- 32-bit little-endian remote fault-mask decoding
+- USART2 startup diagnostics
+- USART2 reporting of decoded remote vehicle-health data
+
+## Current CAN Validation Status
+
+Board 1 CAN1 internal loopback has been verified successfully. That test demonstrated the STM32 bxCAN controller, receive filter, transmit mailbox path, receive FIFO path, standard identifier handling, payload serialization, and byte-for-byte receive verification without requiring an external transceiver.
+
+Both Board 1 and Board 2 now build with CAN1 configured in normal mode at 500 kbit/s. Board 1 can queue the shared Vehicle Health Status frame, and Board 2 initializes CAN successfully and waits for matching traffic.
+
+Physical two-node CAN communication has not yet been declared verified. Initial external transceiver modules did not produce a valid differential dominant bus state during bench diagnostics, so replacement transceiver hardware will be used before physical-bus validation is completed.
+
+This distinction keeps software validation separate from physical-layer validation.
+
 ## Planned Features
 
+- Physical CAN communication validation between the two STM32 nodes
 - Persistent CAN communication and remote-node event history
-- CAN communication between two STM32 nodes
-- Second NUCLEO-F446RE thermal/actuator-control node
-- Bidirectional CAN heartbeat supervision
+- Board 2 remote-status storage
 - CAN communication-loss detection
+- Bidirectional CAN heartbeat supervision
 - Board 2 thermal-control state machine
 - PWM cooling output
 - External LED warning indication
 - Buzzer warning patterns
 - Board 2 safe-state behavior
+- Board 2 watchdog supervision
+- USER button actuator self-test or warning acknowledgement
+- Board 2 actuator/status frame transmitted back to Board 1
 - Remote actuator/status feedback
 - Remote-node fault propagation
+- Board 1 remote-node communication supervision
 - Host-side unit tests
 - Automated build and test integration
 - Final portfolio documentation and system diagrams
@@ -88,22 +139,256 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - ST-LINK USB virtual COM port
 - Two MCP9808 temperature-sensor breakout boards
 - W25Q64 64-Mbit / 8-MiB SPI NOR flash module
+- CAN transceiver interface
 - Breadboard
 - Male header pins
 - Jumper wires
 
-### Planned Board 2
+### Board 2
 
-- Second STM32 NUCLEO-F446RE
-- CAN transceiver
-- External warning LED or RGB LED
-- Buzzer
-- PWM-controlled cooling fan or simulated actuator
-- USER button for actuator self-test or warning acknowledgement
+- STM32 NUCLEO-F446RE
+- STM32F446RE microcontroller
+- ST-LINK USB virtual COM port
+- CAN transceiver interface
+- On-board USER push button
+- External warning LED or RGB LED planned
+- Buzzer planned
+- PWM-controlled cooling fan or simulated actuator planned
+
+## Repository Structure
+
+```text
+EmbeddedVehicleHealthController/
+├── Board1_VehicleHealthController/
+│   ├── App/
+│   │   ├── Inc/
+│   │   └── Src/
+│   ├── Core/
+│   │   ├── Inc/
+│   │   └── Src/
+│   ├── Drivers/
+│   └── EmbeddedVehicleHealthController.ioc
+├── Board2_ThermalActuatorController/
+│   ├── App/
+│   │   ├── Inc/
+│   │   └── Src/
+│   ├── Core/
+│   │   ├── Inc/
+│   │   └── Src/
+│   ├── Drivers/
+│   └── Board2_ThermalActuatorController.ioc
+├── Shared/
+│   └── Inc/
+│       └── CanProtocol.hpp
+├── .gitignore
+└── README.md
+```
+
+STM32CubeIDE metadata and generated build-output directories are omitted from this overview.
+
+## System Architecture
+
+```text
+BOARD 1 — Vehicle Health Controller
+        │
+        ├── MCP9808 Sensor A ─┐
+        ├── MCP9808 Sensor B ─┴─ I²C
+        │
+        ├── TemperatureHealthMonitor
+        ├── FaultManager
+        ├── Independent Watchdog
+        ├── W25Q64 Diagnostic Logger ─ SPI
+        ├── UART Diagnostics
+        │
+        └── CAN1
+             │
+             │  Vehicle Health Status
+             │  Standard ID 0x100
+             ▼
+         CAN TRANSCEIVER
+             │
+           CANH/CANL
+             │
+         CAN TRANSCEIVER
+             ▼
+           CAN1
+             │
+BOARD 2 — Thermal / Actuator Controller
+        │
+        ├── Vehicle Health Status decoder
+        ├── UART diagnostics
+        ├── communication supervision planned
+        ├── thermal-control state machine planned
+        ├── PWM cooling output planned
+        ├── warning LED planned
+        ├── buzzer planned
+        └── actuator status feedback planned
+```
+
+## Shared CAN Protocol
+
+CAN message definitions shared by both firmware projects are kept in:
+
+```text
+Shared/Inc/CanProtocol.hpp
+```
+
+The first message is the Board 1 Vehicle Health Status frame.
+
+```text
+Standard CAN ID: 0x100
+Payload length:  8 bytes
+Protocol version: 1
+```
+
+Payload layout:
+
+```text
+Byte 0       Protocol version
+Byte 1       Status flags
+Bytes 2-3    Selected temperature in 0.1°C, signed 16-bit little-endian
+Bytes 4-7    Active fault mask, unsigned 32-bit little-endian
+```
+
+Status-flag bits:
+
+```text
+Bit 0 = system healthy
+Bit 1 = selected temperature valid
+Bit 2 = Sensor A available
+Bit 3 = Sensor B available
+```
+
+When no trusted selected temperature is available, the encoded temperature uses the signed 16-bit sentinel value:
+
+```text
+-32768
+0x8000
+```
+
+Using a shared protocol header prevents Board 1 and Board 2 from independently redefining message identifiers, byte indexes, status bits, or sentinel values.
+
+## CAN1 Configuration
+
+Both nodes use CAN1 in normal mode for the physical two-node design.
+
+```text
+CAN peripheral clock:    42 MHz
+Prescaler:               6
+Bit Segment 1:           11 TQ
+Bit Segment 2:           2 TQ
+Synchronization Jump:    1 TQ
+Bit rate:                500 kbit/s
+```
+
+The total CAN bit time is:
+
+```text
+1 synchronization TQ + 11 BS1 TQ + 2 BS2 TQ = 14 TQ
+```
+
+Therefore:
+
+```text
+42,000,000 / (6 × 14)
+= 500,000 bits/second
+```
+
+CAN1 uses:
+
+```text
+PA11 = CAN1_RX
+PA12 = CAN1_TX
+```
+
+The current receive filter accepts all CAN identifiers during bring-up and assigns matching traffic to receive FIFO 0. The filter can be narrowed after the distributed message set is finalized.
+
+## Board 1 CAN Transmission
+
+Board 1 builds a current Vehicle Health Status frame from its application state.
+
+The frame includes:
+
+```text
+protocol version
+system-health state
+selected-temperature validity
+Sensor A availability
+Sensor B availability
+selected temperature
+active fault mask
+```
+
+Temperature is converted from the application's internal millidegree-Celsius representation to signed deci-degrees Celsius before serialization.
+
+For example:
+
+```text
+24.7°C
+→ 247 deci-degrees Celsius
+```
+
+The signed 16-bit value is serialized little-endian.
+
+The active fault mask is serialized as four little-endian bytes.
+
+The intended normal runtime behavior is periodic transmission every:
+
+```text
+500 ms
+```
+
+The UART command:
+
+```text
+CAN TEST
+```
+
+also requests an immediate Vehicle Health Status transmission.
+
+A successful queue operation reports:
+
+```text
+OK CAN FRAME QUEUED
+```
+
+This response means the application successfully handed the frame to the bxCAN transmit path. It does not by itself prove that another physical node received or acknowledged the frame.
+
+## Board 2 CAN Reception
+
+Board 2 continuously polls receive FIFO 0.
+
+When an available frame has:
+
+```text
+ID = 0x100
+```
+
+Board 2:
+
+1. validates the payload length,
+2. validates the protocol version,
+3. decodes the status flags,
+4. reconstructs the signed little-endian temperature,
+5. reconstructs the 32-bit little-endian fault mask,
+6. increments the Vehicle Health Status receive counter,
+7. reports the decoded values through USART2.
+
+A decoded message can resemble:
+
+```text
+can_rx_count=1 protocol=1 remote_healthy=1 remote_temp_valid=1 remote_sensor_a=1 remote_sensor_b=1 remote_temp_dC=247 remote_fault_mask=0x00000000
+```
+
+`remote_temp_dC=247` represents:
+
+```text
+24.7°C
+```
 
 ## Temperature-Sensor Configuration
 
-Both MCP9808 sensors share the same I²C bus:
+Both MCP9808 sensors share the same I²C bus on Board 1:
 
 ```text
 NUCLEO-F446RE      Sensor A       Sensor B
@@ -140,530 +425,6 @@ The application stores normal 7-bit addresses. The MCP9808 driver shifts the add
 Sensor A HAL address: 0x18 << 1 = 0x30
 Sensor B HAL address: 0x19 << 1 = 0x32
 ```
-
-## SPI Flash Configuration
-
-The W25Q64 connects to SPI2.
-
-The selected SPI2 alternate-function pins are exposed through the Nucleo ST Morpho headers.
-
-```text
-NUCLEO-F446RE                    W25Q64
-------------------------------------------------
-3V3                              VCC
-GND                              GND
-PB10 / CN10 pin 25 / SPI2_SCK    CLK / SCK
-PC2  / CN7 pin 35 / SPI2_MISO    DO / MISO
-PC1  / CN7 pin 36 / SPI2_MOSI    DI / MOSI
-PB6  / FLASH_CS                  CS
-```
-
-`DI` and `DO` are named from the flash device's perspective:
-
-```text
-DI = flash data input  = STM32 MOSI
-DO = flash data output = STM32 MISO
-```
-
-The Nucleo Arduino `D0`–`D15` headers and the ST Morpho headers are separate connector systems. CubeMX identifies pins using the STM32 GPIO names such as `PB10`, `PC2`, and `PC1`.
-
-Chip select is controlled manually through PB6.
-
-```text
-CS HIGH → flash deselected
-CS LOW  → flash selected
-```
-
-SPI2 uses:
-
-```text
-Master mode
-Full duplex
-8-bit data
-MSB first
-CPOL low
-CPHA first edge
-Software NSS
-Baud-rate prescaler 16
-SPI baud rate approximately 2.625 Mbit/s
-```
-
-The SPI clock is intentionally kept conservative for reliable breadboard and jumper-wire communication.
-
-## Flash Organization
-
-The current W25Q64 driver models:
-
-```text
-Total capacity: 8 MiB
-Page size:      256 bytes
-Sector size:    4096 bytes
-```
-
-Each memory address refers to one byte.
-
-The 8-MiB device therefore provides byte addresses from:
-
-```text
-0x000000
-through
-0x7FFFFF
-```
-
-A 256-byte page contains 256 consecutive byte addresses.
-
-A 4-KiB sector contains:
-
-```text
-4096 / 256 = 16 pages
-```
-
-Flash operations are separated into:
-
-```text
-READ
-PROGRAM
-ERASE
-```
-
-Programming can change erased bits from `1` toward `0`.
-
-Returning programmed `0` bits to `1` requires an erase operation.
-
-Erase operations occur at sector granularity, so erasing one sector affects all 4096 bytes in that sector.
-
-`W25q64::program()` automatically splits writes that cross 256-byte page boundaries.
-
-## W25Q64 Driver
-
-The `W25q64` C++ class provides:
-
-- initialization and JEDEC identification
-- arbitrary flash reads
-- page-aware programming
-- 4-KiB sector erase
-- Write Enable handling
-- Write Enable Latch verification
-- Status Register 1 reads
-- BUSY-bit polling
-- address-range validation
-- explicit chip-select control
-- SPI communication failure tracking
-
-### JEDEC Identification
-
-The firmware sends the JEDEC ID command:
-
-```text
-0x9F
-```
-
-and reads three identification bytes.
-
-The connected device currently reports:
-
-```text
-0xEF4017
-```
-
-indicating successful communication with the connected W25Q64 flash device.
-
-### Page Programming
-
-A single W25Q64 Page Program operation must remain within one 256-byte page.
-
-If a requested write crosses a page boundary, the driver automatically splits it.
-
-For example:
-
-```text
-Starting address: 250
-Length:           20 bytes
-```
-
-is programmed as:
-
-```text
-Page 0:
-6 bytes
-
-Page 1:
-14 bytes
-```
-
-Before each Page Program operation, the driver:
-
-```text
-Waits for flash to become ready
-        ↓
-Sends Write Enable
-        ↓
-Verifies Write Enable Latch
-        ↓
-Sends Page Program command and address
-        ↓
-Sends data
-        ↓
-Waits for programming to complete
-```
-
-### Sector Erase
-
-Sector erase operates on 4096-byte boundaries.
-
-If an address inside a sector is supplied, the driver rounds the address down to the beginning of that sector.
-
-For example:
-
-```text
-Requested address:
-0x001234
-
-Containing sector:
-0x001000 - 0x001FFF
-
-Sector erase address:
-0x001000
-```
-
-The erase command restores the entire sector to the erased state.
-
-## Reserved Flash Test Sector
-
-The final 4-KiB flash sector is reserved for development self-testing.
-
-```text
-Start address: 0x7FF000
-End address:   0x7FFFFF
-```
-
-This region is not used by the persistent diagnostic logger.
-
-The `FLASH TEST` command:
-
-1. Refreshes the watchdog.
-2. Erases the reserved sector.
-3. Refreshes the watchdog.
-4. Programs a known 32-byte pattern.
-5. Refreshes the watchdog.
-6. Reads the pattern back.
-7. Compares every byte.
-8. Reports success or failure.
-
-The hardware flash self-test has been successfully verified using the connected W25Q64.
-
-## Persistent Diagnostic Logging
-
-`DiagnosticLogger` stores structured nonvolatile event records in the first two W25Q64 sectors.
-
-```text
-Start address: 0x000000
-End address:   0x001FFF
-Region size:   8192 bytes
-```
-
-Each diagnostic record is 32 bytes.
-
-```text
-Offset   Size   Field
---------------------------------
-0x00     4      magic
-0x04     4      formatVersion
-0x08     4      eventType
-0x0C     4      sequence
-0x10     4      uptimeMs
-0x14     4      data0
-0x18     4      data1
-0x1C     4      checksum
---------------------------------
-Total    32 bytes
-```
-
-The two-sector region holds 256 records.
-
-Current event types are:
-
-```text
-1 = SystemStartup
-2 = FaultActivated
-3 = FaultCleared
-```
-
-The logger scans the complete region during startup and classifies each slot as erased, valid, or invalid. The scan reconstructs the number of valid records, the latest valid sequence, the next sequence number, the next erased write location, and whether the region is full.
-
-A startup record stores:
-
-```text
-data0 = primary ResetCause enum value
-data1 = complete reset-cause mask
-```
-
-Fault-transition records store:
-
-```text
-data0 = fault bits that changed
-data1 = complete active-fault mask afterward
-```
-
-The logger does not automatically erase old history when full. `LOG ERASE` explicitly erases only the two diagnostic sectors. The final sector at `0x7FF000` remains reserved for `FLASH TEST`.
-
-## CAN1 Internal Loopback Configuration
-
-CAN1 is introduced first in internal loopback mode so the bxCAN controller, filters, message formatting, transmit path, and receive path can be verified before connecting the external CAN transceivers and second STM32 node.
-
-The current CAN1 configuration uses:
-
-```text
-Mode:                    Loopback
-CAN peripheral clock:    42 MHz
-Prescaler:               6
-Bit Segment 1:           11 TQ
-Bit Segment 2:           2 TQ
-Synchronization Jump:    1 TQ
-Bit rate:                 500 kbit/s
-```
-
-The bit rate is calculated from:
-
-```text
-Total time quanta = 1 + 11 + 2 = 14
-
-42,000,000 / (6 × 14)
-= 500,000 bits/second
-```
-
-CAN1 uses the STM32 alternate-function pins:
-
-```text
-PA11 = CAN1_RX
-PA12 = CAN1_TX
-```
-
-No external transceiver or CANH/CANL wiring is required while CAN1 is in internal loopback mode. Physical bus wiring is deferred until CAN1 is switched to normal mode for two-board communication.
-
-### CAN Frame Abstraction
-
-`CanBus` provides a small application-owned wrapper around the STM32 HAL bxCAN interface.
-
-The application uses:
-
-```text
-CanFrame
-├── id
-├── length
-└── data[8]
-```
-
-The first message definition is Board 1 Vehicle Health Status.
-
-```text
-Standard CAN ID: 0x100
-Payload length:  8 bytes
-```
-
-Payload layout:
-
-```text
-Byte 0       Protocol version
-Byte 1       Status flags
-Bytes 2-3    Selected temperature in 0.1°C, signed 16-bit little-endian
-Bytes 4-7    Active fault mask, unsigned 32-bit little-endian
-```
-
-Status-flag bits:
-
-```text
-Bit 0 = system healthy
-Bit 1 = selected temperature valid
-Bit 2 = Sensor A available
-Bit 3 = Sensor B available
-```
-
-When no trusted selected temperature is available, the encoded temperature uses the signed 16-bit sentinel value `0x8000`.
-
-### CAN Receive Filter
-
-The current loopback test configures one 32-bit ID-mask filter assigned to receive FIFO 0. Both the identifier and mask are zero, so the filter accepts all CAN identifiers during bring-up.
-
-This broad filter is intentional for the first CAN test. A later two-node lesson can narrow accepted identifiers once Board 1 and Board 2 message IDs are finalized.
-
-### CAN Loopback Test
-
-The UART command:
-
-```text
-CAN TEST
-```
-
-builds a current vehicle-health frame, transmits it through CAN1, waits for the internally looped-back frame to reach receive FIFO 0, reads it, and compares the received identifier, length, and payload byte-for-byte with the transmitted frame.
-
-A passing test responds:
-
-```text
-OK CAN LOOPBACK TEST PASSED
-```
-
-The test uses a bounded 20-ms receive timeout rather than waiting indefinitely.
-
-## Development Tools
-
-- STM32CubeMX
-- STM32CubeIDE
-- GNU Arm Embedded Toolchain
-- Git
-- PuTTY or another serial terminal
-
-## Project Structure
-
-```text
-EmbeddedVehicleHealthController/
-├── App/
-│   ├── Inc/
-│   │   ├── Application.hpp
-│   │   ├── ButtonDebouncer.hpp
-│   │   ├── CommandParser.hpp
-│   │   ├── CanBus.hpp
-│   │   ├── DiagnosticLogger.hpp
-│   │   ├── DigitalOutput.hpp
-│   │   ├── FaultInjector.hpp
-│   │   ├── FaultManager.hpp
-│   │   ├── Mcp9808.hpp
-│   │   ├── PeriodicTimer.hpp
-│   │   ├── ResetCauseDetector.hpp
-│   │   ├── TemperatureHealthMonitor.hpp
-│   │   ├── UartCommandReceiver.hpp
-│   │   ├── UartTelemetry.hpp
-│   │   ├── W25q64.hpp
-│   │   ├── Watchdog.hpp
-│   │   └── application_bridge.h
-│   └── Src/
-│       ├── Application.cpp
-│       ├── ButtonDebouncer.cpp
-│       ├── CommandParser.cpp
-│       ├── CanBus.cpp
-│       ├── DiagnosticLogger.cpp
-│       ├── DigitalOutput.cpp
-│       ├── FaultInjector.cpp
-│       ├── FaultManager.cpp
-│       ├── Mcp9808.cpp
-│       ├── PeriodicTimer.cpp
-│       ├── ResetCauseDetector.cpp
-│       ├── TemperatureHealthMonitor.cpp
-│       ├── UartCommandReceiver.cpp
-│       ├── UartTelemetry.cpp
-│       ├── W25q64.cpp
-│       ├── Watchdog.cpp
-│       └── application_bridge.cpp
-├── Core/
-│   ├── Inc/
-│   └── Src/
-│       └── main.c
-├── Drivers/
-├── EmbeddedVehicleHealthController.ioc
-└── README.md
-```
-
-STM32CubeIDE metadata and generated build-output directories are omitted from this overview.
-
-## Architecture
-
-```text
-                 MCP9808 A
-                     │
-                     ├── I²C ──┐
-                     │          │
-                 MCP9808 B      │
-                                ▼
-                    TemperatureHealthMonitor
-                                │
-                                ▼
-                          FaultManager
-                                │
-             ┌──────────────────┼──────────────────┐
-             │                  │                  │
-             ▼                  ▼                  ▼
-           UART              SPI Flash        Future CAN
-                               │
-                               ▼
-                            W25Q64
-```
-
-The C++ application layer currently contains:
-
-```text
-Application
-├── DigitalOutput
-├── ButtonDebouncer
-├── PeriodicTimer
-├── FaultInjector
-├── FaultManager
-├── ResetCauseDetector
-├── Mcp9808 Sensor A
-├── Mcp9808 Sensor B
-├── TemperatureHealthMonitor
-├── W25q64
-├── DiagnosticLogger
-├── CanBus
-├── UartCommandReceiver
-├── CommandParser
-├── UartTelemetry
-└── Watchdog
-```
-
-## Cooperative Scheduling
-
-Current task periods are:
-
-```text
-Button sampling:       5 ms
-Heartbeat update:    500 ms
-Health check:       1000 ms
-Temperature sample: 1000 ms
-Telemetry:          1000 ms
-Watchdog refresh:    500 ms
-```
-
-The application uses `HAL_GetTick()` and reusable `PeriodicTimer` objects rather than blocking delays for normal periodic scheduling.
-
-## Automatic Heartbeat
-
-The on-board LD2 LED is an automatic system heartbeat.
-
-Every 500 milliseconds:
-
-```text
-PeriodicTimer
-      ↓
-updateHeartbeat()
-      ↓
-LD2 toggles
-      ↓
-heartbeat_count increments
-```
-
-The heartbeat can no longer be manually disabled.
-
-This makes the heartbeat a consistent indication that normal application scheduling is continuing.
-
-The automatic heartbeat will later provide a natural foundation for CAN node-health supervision.
-
-## USER Button
-
-The Board 1 USER button is now a local diagnostic input.
-
-A debounced press:
-
-```text
-increments button_presses
-        ↓
-immediately transmits current UART telemetry
-```
-
-The button no longer controls heartbeat state.
-
-This behavior more closely represents a local status or diagnostic request.
-
-The future Board 2 USER button is planned for actuator self-test or warning acknowledgement.
 
 ## MCP9808 Temperature Acquisition
 
@@ -740,9 +501,263 @@ These are demonstration thresholds rather than validated vehicle battery safety 
 
 If either available sensor reports a temperature at or above the overtemperature threshold, the overtemperature fault becomes active even if the two sensors disagree.
 
+## SPI Flash Configuration
+
+The W25Q64 connects to SPI2 on Board 1.
+
+```text
+NUCLEO-F446RE                    W25Q64
+------------------------------------------------
+3V3                              VCC
+GND                              GND
+PB10 / CN10 pin 25 / SPI2_SCK    CLK / SCK
+PC2  / CN7 pin 35 / SPI2_MISO    DO / MISO
+PC1  / CN7 pin 36 / SPI2_MOSI    DI / MOSI
+PB6  / FLASH_CS                  CS
+```
+
+`DI` and `DO` are named from the flash device's perspective:
+
+```text
+DI = flash data input  = STM32 MOSI
+DO = flash data output = STM32 MISO
+```
+
+Chip select is controlled manually through PB6.
+
+```text
+CS HIGH → flash deselected
+CS LOW  → flash selected
+```
+
+SPI2 uses:
+
+```text
+Master mode
+Full duplex
+8-bit data
+MSB first
+CPOL low
+CPHA first edge
+Software NSS
+Baud-rate prescaler 16
+SPI baud rate approximately 2.625 Mbit/s
+```
+
+The SPI clock is intentionally kept conservative for reliable breadboard and jumper-wire communication.
+
+## Flash Organization
+
+The W25Q64 driver models:
+
+```text
+Total capacity: 8 MiB
+Page size:      256 bytes
+Sector size:    4096 bytes
+```
+
+Each memory address refers to one byte.
+
+The 8-MiB device therefore provides byte addresses from:
+
+```text
+0x000000
+through
+0x7FFFFF
+```
+
+A 4-KiB sector contains:
+
+```text
+4096 / 256 = 16 pages
+```
+
+Flash operations are separated into:
+
+```text
+READ
+PROGRAM
+ERASE
+```
+
+Programming can change erased bits from `1` toward `0`.
+
+Returning programmed `0` bits to `1` requires an erase operation.
+
+Erase operations occur at sector granularity, so erasing one sector affects all 4096 bytes in that sector.
+
+`W25q64::program()` automatically splits writes that cross 256-byte page boundaries.
+
+## W25Q64 Driver
+
+The `W25q64` C++ class provides:
+
+- initialization and JEDEC identification
+- arbitrary flash reads
+- page-aware programming
+- 4-KiB sector erase
+- Write Enable handling
+- Write Enable Latch verification
+- Status Register 1 reads
+- BUSY-bit polling
+- address-range validation
+- explicit chip-select control
+- SPI communication failure tracking
+
+### JEDEC Identification
+
+The firmware sends:
+
+```text
+0x9F
+```
+
+and reads three JEDEC identification bytes.
+
+The connected device currently reports:
+
+```text
+0xEF4017
+```
+
+indicating successful communication with the connected W25Q64 flash device.
+
+## Reserved Flash Test Sector
+
+The final 4-KiB flash sector is reserved for development self-testing.
+
+```text
+Start address: 0x7FF000
+End address:   0x7FFFFF
+```
+
+This region is not used by the persistent diagnostic logger.
+
+The `FLASH TEST` command:
+
+1. refreshes the watchdog,
+2. erases the reserved sector,
+3. refreshes the watchdog,
+4. programs a known 32-byte pattern,
+5. refreshes the watchdog,
+6. reads the pattern back,
+7. compares every byte,
+8. reports success or failure.
+
+The hardware flash self-test has been successfully verified using the connected W25Q64.
+
+## Persistent Diagnostic Logging
+
+`DiagnosticLogger` stores structured nonvolatile event records in the first two W25Q64 sectors.
+
+```text
+Start address: 0x000000
+End address:   0x001FFF
+Region size:   8192 bytes
+```
+
+Each diagnostic record is 32 bytes.
+
+```text
+Offset   Size   Field
+--------------------------------
+0x00     4      magic
+0x04     4      formatVersion
+0x08     4      eventType
+0x0C     4      sequence
+0x10     4      uptimeMs
+0x14     4      data0
+0x18     4      data1
+0x1C     4      checksum
+--------------------------------
+Total    32 bytes
+```
+
+The two-sector region holds 256 records.
+
+Current event types:
+
+```text
+1 = SystemStartup
+2 = FaultActivated
+3 = FaultCleared
+```
+
+The logger scans the complete region during startup and classifies each slot as erased, valid, or invalid. The scan reconstructs the number of valid records, latest valid sequence, next sequence number, next erased write location, and whether the region is full.
+
+A startup record stores:
+
+```text
+data0 = primary ResetCause enum value
+data1 = complete reset-cause mask
+```
+
+Fault-transition records store:
+
+```text
+data0 = fault bits that changed
+data1 = complete active-fault mask afterward
+```
+
+The logger does not automatically erase old history when full.
+
+`LOG ERASE` explicitly erases only the two diagnostic sectors. The final sector at `0x7FF000` remains reserved for `FLASH TEST`.
+
+## Cooperative Scheduling
+
+Board 1 task periods include:
+
+```text
+Button sampling:       5 ms
+Heartbeat update:    500 ms
+Health check:       1000 ms
+Temperature sample: 1000 ms
+Telemetry:          1000 ms
+Watchdog refresh:    500 ms
+CAN transmit:        500 ms
+```
+
+The application uses `HAL_GetTick()` and reusable `PeriodicTimer` objects rather than blocking delays for normal periodic scheduling.
+
+## Automatic Heartbeat
+
+The Board 1 on-board LD2 LED is an automatic system heartbeat.
+
+Every 500 milliseconds:
+
+```text
+PeriodicTimer
+      ↓
+updateHeartbeat()
+      ↓
+LD2 toggles
+      ↓
+heartbeat_count increments
+```
+
+The heartbeat cannot be manually disabled during normal operation.
+
+This makes the heartbeat a consistent indication that normal application scheduling is continuing.
+
+## USER Button
+
+The Board 1 USER button is a local diagnostic input.
+
+A debounced press:
+
+```text
+increments button_presses
+        ↓
+immediately transmits current UART telemetry
+```
+
+The button does not control heartbeat state.
+
+Board 2's USER button is reserved for a future actuator self-test or warning-acknowledgement function.
+
 ## Independent Watchdog
 
-The application refreshes the independent watchdog every 500 milliseconds during normal execution.
+Board 1 refreshes the independent watchdog every 500 milliseconds during normal execution.
 
 The `WATCHDOG TEST` command deliberately stops watchdog refreshes so hardware reset behavior can be verified.
 
@@ -776,7 +791,7 @@ When both power-on and brownout flags are present during ordinary startup, power
 
 ## Fault Monitoring
 
-Fault bits:
+Board 1 fault bits:
 
 ```text
 Bit 0 — 0x00000001 — Button task timeout
@@ -791,9 +806,9 @@ Both active and latched masks are maintained.
 
 A degraded temperature mode can still provide a valid selected temperature while the corresponding unavailable-sensor fault keeps the overall system health state faulted.
 
-## UART Telemetry
+## UART Configuration
 
-USART2 communicates through the ST-LINK virtual COM port.
+Both nodes use USART2 through their ST-LINK virtual COM ports.
 
 ```text
 115200 baud
@@ -803,7 +818,9 @@ No parity
 No flow control
 ```
 
-Current telemetry fields include:
+## Board 1 UART Telemetry
+
+Current Board 1 telemetry fields include:
 
 ```text
 uptime_ms
@@ -871,7 +888,7 @@ rx_errors
 
 Telemetry uses a fixed 1280-byte buffer and a bounded 150-ms UART transmission timeout.
 
-## UART Line Handling
+## Board 1 UART Line Handling
 
 Either character completes an input command:
 
@@ -884,7 +901,7 @@ CR, LF, and CR+LF terminals are supported.
 
 For CR+LF, the second terminator produces an empty line, which is ignored.
 
-## UART Commands
+## Board 1 UART Commands
 
 ### Status
 
@@ -916,15 +933,11 @@ TEMPERATURES
 FLASH STATUS
 ```
 
-Immediately sends telemetry containing flash availability, JEDEC ID, failure count, and self-test state.
-
 ### Flash Self-Test
 
 ```text
 FLASH TEST
 ```
-
-The final reserved 4-KiB flash sector is erased, programmed with a known pattern, read back, and verified.
 
 A successful test responds:
 
@@ -940,18 +953,18 @@ LOG ERASE
 
 Erases the two 4-KiB sectors reserved for persistent diagnostic records without affecting the final `FLASH TEST` sector.
 
-### CAN Loopback Test
+### CAN Transmit Test
 
 ```text
 CAN TEST
 ```
 
-Transmits one Board 1 Vehicle Health Status frame through CAN1 internal loopback and verifies that the received identifier, payload length, and all eight payload bytes match the transmitted frame.
+Requests an immediate Vehicle Health Status frame transmission.
 
-A successful test responds:
+A successful queue operation responds:
 
 ```text
-OK CAN LOOPBACK TEST PASSED
+OK CAN FRAME QUEUED
 ```
 
 ### Fault Injection
@@ -995,148 +1008,61 @@ HEARTBEAT ON
 HEARTBEAT OFF
 ```
 
-commands have been removed because heartbeat operation is now automatic.
+commands remain removed because heartbeat operation is automatic.
 
-## SPI Flash Verification
+## Development Tools
 
-### Startup Identification
+- STM32CubeMX
+- STM32CubeIDE
+- GNU Arm Embedded Toolchain
+- Git
+- PuTTY or another serial terminal
+- Digital multimeter for bench diagnostics
 
-Successful startup communication produces:
+## Current Verification Summary
 
-```text
-flash_available=1
-flash_jedec_id=0xEF4017
-flash_failures=0
-```
+Verified on Board 1 hardware:
 
-This confirms successful SPI communication and flash identification.
+- automatic heartbeat
+- USER-button diagnostic snapshot
+- dual MCP9808 I²C communication
+- redundant/degraded temperature monitoring
+- runtime fault detection and injection
+- independent watchdog reset behavior
+- reset-cause reporting
+- W25Q64 JEDEC identification
+- SPI erase/program/read self-test
+- persistent diagnostic logging across reset
+- CAN1 internal loopback
+- UART command and telemetry handling
 
-### Self-Test
+Verified in the current two-project software structure:
 
-Run:
+- Board 1 project builds
+- Board 2 project builds
+- shared CAN protocol header is consumed by both firmware targets
+- Board 1 CAN1 initializes in normal mode
+- Board 1 can queue the Vehicle Health Status frame
+- Board 2 CAN1 initializes in normal mode
+- Board 2 UART startup path runs
+- Board 2 receive/decode framework compiles and runs
 
-```text
-FLASH TEST
-```
+Pending physical validation:
 
-Expected response:
+- external CAN transceiver operation
+- valid differential CANH/CANL signaling
+- Board 2 receipt of Board 1 `0x100` frames
+- CAN acknowledgment between nodes
+- sustained periodic two-node communication
+- fault and temperature propagation over the physical bus
 
-```text
-OK FLASH TEST PASSED
-```
-
-followed by telemetry containing:
-
-```text
-flash_test_run=1
-flash_test_passed=1
-```
-
-A passing self-test verifies:
-
-```text
-SPI2 configuration
-SCK communication
-MOSI communication
-MISO communication
-chip-select control
-JEDEC identification
-status-register polling
-Write Enable
-sector erase
-page programming
-flash reads
-byte-for-byte verification
-```
-
-### CAN Loopback Verification
-
-Run:
-
-```text
-CAN TEST
-```
-
-Expected response:
-
-```text
-OK CAN LOOPBACK TEST PASSED
-```
-
-A passing loopback test verifies the CAN1 peripheral startup path, receive filter, transmit mailbox path, internal loopback path, receive FIFO 0 path, standard identifier handling, payload serialization, and byte-for-byte frame verification.
-
-The external SN65HVD230 transceivers and physical CANH/CANL bus are not part of this internal-loopback test.
-
-### Flash Disconnection
-
-With the board powered off, disconnect the flash module and restart.
-
-Expected:
-
-```text
-flash_available=0
-```
-
-The rest of the controller should continue operating.
-
-External flash unavailability currently does not force the controller into a fatal state.
-
-## Current Verified Telemetry Example
-
-A successful system state can resemble:
-
-```text
-reset_cause=POWER_ON
-temp_a_available=1
-temp_b_available=1
-temp_mode=REDUNDANT
-temp_selected_valid=1
-flash_available=1
-flash_jedec_id=0xEF4017
-flash_failures=0
-healthy=1
-timer_active=1
-active_faults=0x00000000
-watchdog_failures=0
-```
-
-The W25Q64 erase/program/read self-test has also been verified successfully on hardware. Persistent diagnostic records have been verified across resets. CAN1 internal loopback is the current CAN bring-up target before physical two-node communication.
-
-## Future Two-Node Architecture
-
-The current controller will become Board 1 of a distributed CAN system. CAN1 is first validated locally in internal loopback mode before the physical two-node bus is introduced.
-
-```text
-BOARD 1 — Vehicle Health Controller
-        │
-        ├── redundant temperature sensing
-        ├── fault management
-        ├── watchdog recovery
-        ├── persistent SPI diagnostic logging
-        ├── UART diagnostics
-        └── CAN
-             │
-             │
-          CAN bus
-             │
-             ▼
-BOARD 2 — Thermal / Actuator Controller
-        │
-        ├── CAN supervision
-        ├── thermal-control state machine
-        ├── PWM cooling output
-        ├── external warning LED
-        ├── buzzer
-        ├── safe-state handling
-        ├── actuator status feedback
-        └── watchdog
-```
+## Future Two-Node Behavior
 
 Board 1 will transmit system-health and temperature information over CAN.
 
 Board 2 will use that information to determine the required thermal-control response.
 
-Example future thermal states may include:
+Planned thermal states include:
 
 ```text
 NORMAL
@@ -1151,7 +1077,7 @@ Cooling output will increase gradually with temperature using PWM rather than op
 
 Board 2 will also provide visible and audible warning behavior through an external LED and buzzer.
 
-Both nodes will supervise CAN heartbeat messages.
+Both nodes will supervise communication health.
 
 Loss of communication will cause the affected node to report a communication fault and transition to defined safe behavior.
 
@@ -1162,7 +1088,8 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 ## Design Principles
 
 - Separate generated hardware code from application-owned C++
-- Keep hardware configuration in the `.ioc` file
+- Keep hardware configuration in each board's `.ioc` file
+- Keep shared inter-node protocol definitions outside board-specific firmware
 - Keep interrupt handlers short
 - Avoid dynamic allocation
 - Use fixed-capacity buffers
@@ -1183,12 +1110,11 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Use fixed-size persistent records with integrity validation
 - Log fault transitions rather than repeatedly storing steady-state faults
 - Reconstruct persistent logger state from flash after reset
-- Validate CAN locally in internal loopback before adding physical bus variables
 - Keep CAN message definitions explicit and fixed-width
 - Keep the low-level CAN transport separate from application message policy
-- Use bounded waits for explicit diagnostic self-tests
-- Verify programmed flash data by reading it back
-- Continue operating if an external peripheral is unavailable
+- Share CAN message layout definitions between nodes
+- Validate software transport paths independently from physical CAN hardware
+- Do not claim physical CAN communication as verified until both nodes exchange and acknowledge frames on the real bus
+- Continue operating when a noncritical external peripheral is unavailable
 - Preserve watchdog recovery behavior during peripheral operations
-- Prepare subsystem boundaries for future CAN integration
-- Use defined safe-state behavior for future distributed-node failures````
+- Use defined safe-state behavior for future distributed-node failures
