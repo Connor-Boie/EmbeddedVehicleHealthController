@@ -2,6 +2,7 @@
 #define APPLICATION_HPP
 
 #include "CanBus.hpp"
+#include "RemoteVehicleStatus.hpp"
 
 #include <cstdint>
 
@@ -11,33 +12,36 @@ public:
     Application();
 
     void initialize();
+
     void run();
 
 private:
     void processCanReceive();
 
-    void processVehicleHealthStatus(
-        const CanFrame& frame);
+    void updateRemoteCommunicationState();
 
-    void sendStartupMessage(
-        bool canInitialized);
+    void reportRemoteVehicleStatus();
 
-    void sendVehicleHealthStatus(
-        std::uint8_t protocolVersion,
-        bool systemHealthy,
-        bool temperatureValid,
-        bool sensorAAvailable,
-        bool sensorBAvailable,
-        std::int16_t temperatureDeciCelsius,
-        std::uint32_t faultMask);
+    void reportCommunicationState(
+        RemoteCommunicationState state);
 
-    void sendText(
+    void runRemoteStatusSelfTest();
+
+    void transmitText(
         const char* text);
 
     CanBus canBus_;
 
-    std::uint32_t vehicleHealthReceiveCount_{0U};
-    std::uint32_t invalidVehicleHealthCount_{0U};
+    RemoteVehicleStatus
+        remoteVehicleStatus_;
+
+    RemoteCommunicationState
+        previousCommunicationState_{
+            RemoteCommunicationState::
+                WaitingForData};
+
+    bool communicationStateInitialized_{
+        false};
 };
 
 #endif

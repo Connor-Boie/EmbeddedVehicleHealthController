@@ -95,6 +95,12 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - 32-bit little-endian remote fault-mask decoding
 - USART2 startup diagnostics
 - USART2 reporting of decoded remote vehicle-health data
+- Stored remote vehicle-health state on Board 2
+- Board 2 CAN communication states: `WAITING_FOR_DATA`, `CONNECTED`, and `COMMUNICATION_LOST`
+- 1500-ms remote CAN communication timeout supervision
+- Wraparound-safe elapsed-time checking with `HAL_GetTick()`
+- Software-only remote-status self-test using a synthetic CAN frame
+- UART reporting when the remote communication state changes
 
 ## Current CAN Validation Status
 
@@ -110,8 +116,6 @@ This distinction keeps software validation separate from physical-layer validati
 
 - Physical CAN communication validation between the two STM32 nodes
 - Persistent CAN communication and remote-node event history
-- Board 2 remote-status storage
-- CAN communication-loss detection
 - Bidirectional CAN heartbeat supervision
 - Board 2 thermal-control state machine
 - PWM cooling output
@@ -1046,6 +1050,9 @@ Verified in the current two-project software structure:
 - Board 2 CAN1 initializes in normal mode
 - Board 2 UART startup path runs
 - Board 2 receive/decode framework compiles and runs
+- Board 2 stores the latest valid remote vehicle-health state
+- Board 2 remote-status software self-test validates decoding and timeout behavior without a physical CAN bus
+- Board 2 communication supervision distinguishes waiting, connected, and communication-lost states
 
 Pending physical validation:
 
@@ -1077,7 +1084,9 @@ Cooling output will increase gradually with temperature using PWM rather than op
 
 Board 2 will also provide visible and audible warning behavior through an external LED and buzzer.
 
-Both nodes will supervise communication health.
+Board 2 already contains software-level remote communication supervision. It tracks whether it is still waiting for its first valid frame, currently connected, or has exceeded the communication timeout after previously receiving valid traffic. Physical timeout behavior will be validated after the replacement CAN transceivers are installed.
+
+Both nodes will ultimately supervise communication health.
 
 Loss of communication will cause the affected node to report a communication fault and transition to defined safe behavior.
 
@@ -1113,6 +1122,9 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Keep CAN message definitions explicit and fixed-width
 - Keep the low-level CAN transport separate from application message policy
 - Share CAN message layout definitions between nodes
+- Store decoded remote-node state separately from low-level CAN transport
+- Use explicit communication states instead of treating missing data as valid data
+- Use wraparound-safe elapsed-time comparisons for communication supervision
 - Validate software transport paths independently from physical CAN hardware
 - Do not claim physical CAN communication as verified until both nodes exchange and acknowledge frames on the real bus
 - Continue operating when a noncritical external peripheral is unavailable

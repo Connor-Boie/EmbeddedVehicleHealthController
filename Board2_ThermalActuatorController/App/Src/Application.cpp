@@ -13,234 +13,356 @@ extern UART_HandleTypeDef huart2;
 
 namespace
 {
-constexpr std::uint32_t
-    UartTransmitTimeoutMs = 100U;
 
-constexpr std::size_t
-    UartMessageCapacity = 256U;
+constexpr std::uint32_t
+    UartTimeoutMs = 100U;
+
 }
 
 Application::Application()
-    : canBus_{
-          &hcan1}
+    : canBus_{&hcan1}
 {
 }
 
 void Application::initialize()
 {
-    vehicleHealthReceiveCount_ = 0U;
-    invalidVehicleHealthCount_ = 0U;
+    remoteVehicleStatus_.reset();
 
-    const bool canInitialized =
-        canBus_.initialize();
+    communicationStateInitialized_ =
+        false;
 
-    sendStartupMessage(
-        canInitialized);
+    if (canBus_.initialize())
+    {
+        transmitText(
+            "BOARD2 READY CAN INITIALIZED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BOARD2 ERROR CAN NOT INITIALIZED\r\n");
+    }
+
+    runRemoteStatusSelfTest();
+
+    reportCommunicationState(
+        remoteVehicleStatus_.
+            communicationState());
+
+    previousCommunicationState_ =
+        remoteVehicleStatus_.
+            communicationState();
+
+    communicationStateInitialized_ =
+        true;
 }
 
 void Application::run()
 {
     processCanReceive();
+
+    updateRemoteCommunicationState();
 }
 
 void Application::processCanReceive()
 {
-    while (canBus_.messagePending())
+    CanFrame frame{};
+
+    while (canBus_.receive(frame))
     {
-        CanFrame frame{};
+        const std::uint32_t
+            currentTimeMs =
+                HAL_GetTick();
 
-        if (!canBus_.receive(frame))
+        const bool accepted =
+            remoteVehicleStatus_.processFrame(
+                frame,
+                currentTimeMs);
+
+        if (accepted)
         {
-            sendText(
-                "ERROR CAN RECEIVE FAILED");
-
-            return;
-        }
-
-        if (frame.id ==
-            CanProtocol::MessageId::
-                VehicleHealthStatus)
-        {
-            processVehicleHealthStatus(
-                frame);
+            reportRemoteVehicleStatus();
         }
     }
 }
 
-void Application::processVehicleHealthStatus(
-    const CanFrame& frame)
+void Application::
+    updateRemoteCommunicationState()
 {
-    if (frame.length !=
-        CanProtocol::VehicleHealthStatus::
-            PayloadLength)
+    const std::uint32_t currentTimeMs =
+        HAL_GetTick();
+
+    remoteVehicleStatus_.
+        updateCommunicationState(
+            currentTimeMs);
+
+    const RemoteCommunicationState
+        currentState =
+            remoteVehicleStatus_.
+                communicationState();
+
+    if ((!communicationStateInitialized_) ||
+        (currentState !=
+         previousCommunicationState_))
     {
-        ++invalidVehicleHealthCount_;
+        reportCommunicationState(
+            currentState);
 
-        sendText(
-            "ERROR VEHICLE HEALTH LENGTH");
+        previousCommunicationState_ =
+            currentState;
 
-        return;
+        communicationStateInitialized_ =
+            true;
     }
-
-    const std::uint8_t protocolVersion =
-        frame.data[
-            CanProtocol::
-                VehicleHealthStatus::
-                ProtocolVersionIndex];
-
-    if (protocolVersion !=
-        CanProtocol::ProtocolVersion)
-    {
-        ++invalidVehicleHealthCount_;
-
-        sendText(
-            "ERROR CAN PROTOCOL VERSION");
-
-        return;
-    }
-
-    const std::uint8_t statusFlags =
-        frame.data[
-            CanProtocol::
-                VehicleHealthStatus::
-                StatusFlagsIndex];
-
-    const bool systemHealthy =
-        (statusFlags &
-         CanProtocol::
-             VehicleHealthStatus::
-             SystemHealthyFlag) != 0U;
-
-    const bool temperatureValid =
-        (statusFlags &
-         CanProtocol::
-             VehicleHealthStatus::
-             SelectedTemperatureValidFlag) != 0U;
-
-    const bool sensorAAvailable =
-        (statusFlags &
-         CanProtocol::
-             VehicleHealthStatus::
-             SensorAAvailableFlag) != 0U;
-
-    const bool sensorBAvailable =
-        (statusFlags &
-         CanProtocol::
-             VehicleHealthStatus::
-             SensorBAvailableFlag) != 0U;
-
-    const std::uint16_t
-        encodedTemperature =
-            static_cast<std::uint16_t>(
-                frame.data[
-                    CanProtocol::
-                        VehicleHealthStatus::
-                        TemperatureLowByteIndex]) |
-            static_cast<std::uint16_t>(
-                static_cast<std::uint16_t>(
-                    frame.data[
-                        CanProtocol::
-                            VehicleHealthStatus::
-                            TemperatureHighByteIndex])
-                << 8U);
-
-    const std::int16_t
-        temperatureDeciCelsius =
-            static_cast<std::int16_t>(
-                encodedTemperature);
-
-    const std::uint32_t faultMask =
-        static_cast<std::uint32_t>(
-            frame.data[
-                CanProtocol::
-                    VehicleHealthStatus::
-                    FaultMaskByte0Index]) |
-        (static_cast<std::uint32_t>(
-            frame.data[
-                CanProtocol::
-                    VehicleHealthStatus::
-                    FaultMaskByte1Index])
-         << 8U) |
-        (static_cast<std::uint32_t>(
-            frame.data[
-                CanProtocol::
-                    VehicleHealthStatus::
-                    FaultMaskByte2Index])
-         << 16U) |
-        (static_cast<std::uint32_t>(
-            frame.data[
-                CanProtocol::
-                    VehicleHealthStatus::
-                    FaultMaskByte3Index])
-         << 24U);
-
-    ++vehicleHealthReceiveCount_;
-
-    sendVehicleHealthStatus(
-        protocolVersion,
-        systemHealthy,
-        temperatureValid,
-        sensorAAvailable,
-        sensorBAvailable,
-        temperatureDeciCelsius,
-        faultMask);
 }
 
-void Application::sendStartupMessage(
-    bool canInitialized)
+void Application::
+    reportRemoteVehicleStatus()
 {
-    sendText(
-        canInitialized
-            ? "BOARD2 READY CAN INITIALIZED"
-            : "BOARD2 ERROR CAN NOT INITIALIZED");
-}
+    char message[256]{};
 
-void Application::sendVehicleHealthStatus(
-    std::uint8_t protocolVersion,
-    bool systemHealthy,
-    bool temperatureValid,
-    bool sensorAAvailable,
-    bool sensorBAvailable,
-    std::int16_t temperatureDeciCelsius,
-    std::uint32_t faultMask)
-{
-    char message[
-        UartMessageCapacity]{};
-
-    const int written =
+    const int length =
         std::snprintf(
             message,
             sizeof(message),
             "can_rx_count=%lu "
-            "protocol=%u "
             "remote_healthy=%u "
             "remote_temp_valid=%u "
             "remote_sensor_a=%u "
             "remote_sensor_b=%u "
             "remote_temp_dC=%d "
-            "remote_fault_mask=0x%08lX",
+            "remote_fault_mask=0x%08lX\r\n",
             static_cast<unsigned long>(
-                vehicleHealthReceiveCount_),
-            static_cast<unsigned int>(
-                protocolVersion),
-            systemHealthy ? 1U : 0U,
-            temperatureValid ? 1U : 0U,
-            sensorAAvailable ? 1U : 0U,
-            sensorBAvailable ? 1U : 0U,
+                remoteVehicleStatus_.
+                    validFrameCount()),
+            remoteVehicleStatus_.
+                    systemHealthy()
+                ? 1U
+                : 0U,
+            remoteVehicleStatus_.
+                    temperatureValid()
+                ? 1U
+                : 0U,
+            remoteVehicleStatus_.
+                    sensorAAvailable()
+                ? 1U
+                : 0U,
+            remoteVehicleStatus_.
+                    sensorBAvailable()
+                ? 1U
+                : 0U,
             static_cast<int>(
-                temperatureDeciCelsius),
+                remoteVehicleStatus_.
+                    temperatureDeciCelsius()),
             static_cast<unsigned long>(
-                faultMask));
+                remoteVehicleStatus_.
+                    faultMask()));
 
-    if (written <= 0)
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
     {
         return;
     }
 
-    sendText(message);
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            message),
+        static_cast<std::uint16_t>(
+            length),
+        UartTimeoutMs);
 }
 
-void Application::sendText(
+void Application::reportCommunicationState(
+    RemoteCommunicationState state)
+{
+    switch (state)
+    {
+        case RemoteCommunicationState::
+            WaitingForData:
+        {
+            transmitText(
+                "remote_can_state="
+                "WAITING_FOR_DATA\r\n");
+            break;
+        }
+
+        case RemoteCommunicationState::
+            Connected:
+        {
+            transmitText(
+                "remote_can_state="
+                "CONNECTED\r\n");
+            break;
+        }
+
+        case RemoteCommunicationState::
+            CommunicationLost:
+        {
+            transmitText(
+                "remote_can_state="
+                "COMMUNICATION_LOST\r\n");
+            break;
+        }
+    }
+}
+
+void Application::runRemoteStatusSelfTest()
+{
+    RemoteVehicleStatus testStatus{};
+
+    testStatus.reset();
+
+    CanFrame testFrame{};
+
+    testFrame.id =
+        CanProtocol::MessageId::
+            VehicleHealthStatus;
+
+    testFrame.length =
+        CanProtocol::
+            VehicleHealthStatus::
+                PayloadLength;
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                ProtocolVersionIndex] =
+        CanProtocol::ProtocolVersion;
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                StatusFlagsIndex] =
+        CanProtocol::
+            VehicleHealthStatus::
+                SystemHealthyFlag |
+        CanProtocol::
+            VehicleHealthStatus::
+                SelectedTemperatureValidFlag |
+        CanProtocol::
+            VehicleHealthStatus::
+                SensorAAvailableFlag |
+        CanProtocol::
+            VehicleHealthStatus::
+                SensorBAvailableFlag;
+
+    constexpr std::int16_t
+        TestTemperatureDeciCelsius = 247;
+
+    const std::uint16_t
+        testTemperatureUnsigned =
+            static_cast<std::uint16_t>(
+                TestTemperatureDeciCelsius);
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                TemperatureLowByteIndex] =
+        static_cast<std::uint8_t>(
+            testTemperatureUnsigned &
+            0xFFU);
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                TemperatureHighByteIndex] =
+        static_cast<std::uint8_t>(
+            (testTemperatureUnsigned >>
+             8U) &
+            0xFFU);
+
+    constexpr std::uint32_t
+        TestFaultMask = 0x00000020U;
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte0Index] =
+        static_cast<std::uint8_t>(
+            TestFaultMask &
+            0xFFU);
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte1Index] =
+        static_cast<std::uint8_t>(
+            (TestFaultMask >>
+             8U) &
+            0xFFU);
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte2Index] =
+        static_cast<std::uint8_t>(
+            (TestFaultMask >>
+             16U) &
+            0xFFU);
+
+    testFrame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte3Index] =
+        static_cast<std::uint8_t>(
+            (TestFaultMask >>
+             24U) &
+            0xFFU);
+
+    constexpr std::uint32_t
+        TestReceiveTimeMs = 1000U;
+
+    const bool frameAccepted =
+        testStatus.processFrame(
+            testFrame,
+            TestReceiveTimeMs);
+
+    const bool decodedCorrectly =
+        frameAccepted &&
+        testStatus.hasReceivedValidFrame() &&
+        testStatus.systemHealthy() &&
+        testStatus.temperatureValid() &&
+        testStatus.sensorAAvailable() &&
+        testStatus.sensorBAvailable() &&
+        (testStatus.temperatureDeciCelsius() ==
+         TestTemperatureDeciCelsius) &&
+        (testStatus.faultMask() ==
+         TestFaultMask) &&
+        (testStatus.communicationState() ==
+         RemoteCommunicationState::
+             Connected);
+
+    constexpr std::uint32_t
+        TestTimeoutTimeMs =
+            TestReceiveTimeMs +
+            RemoteVehicleStatus::
+                CommunicationTimeoutMs +
+            1U;
+
+    testStatus.updateCommunicationState(
+        TestTimeoutTimeMs);
+
+    const bool timeoutCorrect =
+        testStatus.communicationState() ==
+        RemoteCommunicationState::
+            CommunicationLost;
+
+    if (decodedCorrectly &&
+        timeoutCorrect)
+    {
+        transmitText(
+            "REMOTE STATUS SELF TEST PASSED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "REMOTE STATUS SELF TEST FAILED\r\n");
+    }
+}
+
+void Application::transmitText(
     const char* text)
 {
     if (text == nullptr)
@@ -248,40 +370,25 @@ void Application::sendText(
         return;
     }
 
-    char message[
-        UartMessageCapacity]{};
+    std::uint16_t length = 0U;
 
-    const int written =
-        std::snprintf(
-            message,
-            sizeof(message),
-            "%s\r\n",
-            text);
+    while ((text[length] != '\0') &&
+           (length <
+            static_cast<std::uint16_t>(
+                512U)))
+    {
+        ++length;
+    }
 
-    if (written <= 0)
+    if (length == 0U)
     {
         return;
     }
 
-    std::size_t length =
-        static_cast<std::size_t>(
-            written);
-
-    if (length >= sizeof(message))
-    {
-        length =
-            sizeof(message) - 1U;
-    }
-
-    const HAL_StatusTypeDef status =
-        HAL_UART_Transmit(
-            &huart2,
-            reinterpret_cast<std::uint8_t*>(
-                message),
-            static_cast<std::uint16_t>(
-                length),
-            UartTransmitTimeoutMs);
-
-    static_cast<void>(
-        status);
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            const_cast<char*>(text)),
+        length,
+        UartTimeoutMs);
 }
