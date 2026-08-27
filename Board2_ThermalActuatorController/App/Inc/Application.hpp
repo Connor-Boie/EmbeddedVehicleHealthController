@@ -3,6 +3,7 @@
 
 #include "CanBus.hpp"
 #include "RemoteVehicleStatus.hpp"
+#include "ThermalControlStateMachine.hpp"
 
 #include <cstdint>
 
@@ -20,12 +21,19 @@ private:
 
     void updateRemoteCommunicationState();
 
+    void updateThermalControlState();
+
     void reportRemoteVehicleStatus();
 
     void reportCommunicationState(
         RemoteCommunicationState state);
 
+    void reportThermalControlState(
+        ThermalControlState state);
+
     void runRemoteStatusSelfTest();
+
+    void runThermalControlSelfTest();
 
     void transmitText(
         const char* text);
@@ -35,12 +43,22 @@ private:
     RemoteVehicleStatus
         remoteVehicleStatus_;
 
+    ThermalControlStateMachine
+        thermalControlStateMachine_;
+
     RemoteCommunicationState
         previousCommunicationState_{
             RemoteCommunicationState::
                 WaitingForData};
 
+    ThermalControlState
+        previousThermalControlState_{
+            ThermalControlState::Safe};
+
     bool communicationStateInitialized_{
+        false};
+
+    bool thermalControlStateInitialized_{
         false};
 };
 

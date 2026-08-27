@@ -17,6 +17,101 @@ namespace
 constexpr std::uint32_t
     UartTimeoutMs = 100U;
 
+CanFrame buildTestVehicleHealthFrame(
+    bool temperatureValid,
+    std::int16_t temperatureDeciCelsius)
+{
+    CanFrame frame{};
+
+    frame.id =
+        CanProtocol::MessageId::
+            VehicleHealthStatus;
+
+    frame.length =
+        CanProtocol::
+            VehicleHealthStatus::
+                PayloadLength;
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                ProtocolVersionIndex] =
+        CanProtocol::ProtocolVersion;
+
+    std::uint8_t statusFlags =
+        CanProtocol::
+            VehicleHealthStatus::
+                SystemHealthyFlag |
+        CanProtocol::
+            VehicleHealthStatus::
+                SensorAAvailableFlag |
+        CanProtocol::
+            VehicleHealthStatus::
+                SensorBAvailableFlag;
+
+    if (temperatureValid)
+    {
+        statusFlags |=
+            CanProtocol::
+                VehicleHealthStatus::
+                    SelectedTemperatureValidFlag;
+    }
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                StatusFlagsIndex] =
+        statusFlags;
+
+    const std::uint16_t
+        temperatureUnsigned =
+            static_cast<std::uint16_t>(
+                temperatureDeciCelsius);
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                TemperatureLowByteIndex] =
+        static_cast<std::uint8_t>(
+            temperatureUnsigned &
+            0xFFU);
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                TemperatureHighByteIndex] =
+        static_cast<std::uint8_t>(
+            (temperatureUnsigned >>
+             8U) &
+            0xFFU);
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte0Index] =
+        0U;
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte1Index] =
+        0U;
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte2Index] =
+        0U;
+
+    frame.data[
+        CanProtocol::
+            VehicleHealthStatus::
+                FaultMaskByte3Index] =
+        0U;
+
+    return frame;
+}
+
 }
 
 Application::Application()
@@ -28,7 +123,12 @@ void Application::initialize()
 {
     remoteVehicleStatus_.reset();
 
+    thermalControlStateMachine_.reset();
+
     communicationStateInitialized_ =
+        false;
+
+    thermalControlStateInitialized_ =
         false;
 
     if (canBus_.initialize())
@@ -44,6 +144,8 @@ void Application::initialize()
 
     runRemoteStatusSelfTest();
 
+    runThermalControlSelfTest();
+
     reportCommunicationState(
         remoteVehicleStatus_.
             communicationState());
@@ -54,13 +156,32 @@ void Application::initialize()
 
     communicationStateInitialized_ =
         true;
+
+    thermalControlStateMachine_.update(
+        remoteVehicleStatus_);
+
+    reportThermalControlState(
+        thermalControlStateMachine_.
+            state());
+
+    previousThermalControlState_ =
+        thermalControlStateMachine_.
+            state();
+
+    thermalControlStateInitialized_ =
+        true;
 }
 
 void Application::run()
 {
-    processCanReceive();
+    if (canBus_.initialized())
+    {
+        processCanReceive();
+    }
 
     updateRemoteCommunicationState();
+
+    updateThermalControlState();
 }
 
 void Application::processCanReceive()
@@ -111,6 +232,32 @@ void Application::
             currentState;
 
         communicationStateInitialized_ =
+            true;
+    }
+}
+
+void Application::
+    updateThermalControlState()
+{
+    thermalControlStateMachine_.update(
+        remoteVehicleStatus_);
+
+    const ThermalControlState
+        currentState =
+            thermalControlStateMachine_.
+                state();
+
+    if ((!thermalControlStateInitialized_) ||
+        (currentState !=
+         previousThermalControlState_))
+    {
+        reportThermalControlState(
+            currentState);
+
+        previousThermalControlState_ =
+            currentState;
+
+        thermalControlStateInitialized_ =
             true;
     }
 }
@@ -208,108 +355,66 @@ void Application::reportCommunicationState(
     }
 }
 
+void Application::
+    reportThermalControlState(
+        ThermalControlState state)
+{
+    switch (state)
+    {
+        case ThermalControlState::Normal:
+        {
+            transmitText(
+                "thermal_state=NORMAL\r\n");
+            break;
+        }
+
+        case ThermalControlState::Warm:
+        {
+            transmitText(
+                "thermal_state=WARM\r\n");
+            break;
+        }
+
+        case ThermalControlState::Cooling:
+        {
+            transmitText(
+                "thermal_state=COOLING\r\n");
+            break;
+        }
+
+        case ThermalControlState::High:
+        {
+            transmitText(
+                "thermal_state=HIGH\r\n");
+            break;
+        }
+
+        case ThermalControlState::Critical:
+        {
+            transmitText(
+                "thermal_state=CRITICAL\r\n");
+            break;
+        }
+
+        case ThermalControlState::Safe:
+        {
+            transmitText(
+                "thermal_state=SAFE\r\n");
+            break;
+        }
+    }
+}
+
 void Application::runRemoteStatusSelfTest()
 {
     RemoteVehicleStatus testStatus{};
 
     testStatus.reset();
 
-    CanFrame testFrame{};
-
-    testFrame.id =
-        CanProtocol::MessageId::
-            VehicleHealthStatus;
-
-    testFrame.length =
-        CanProtocol::
-            VehicleHealthStatus::
-                PayloadLength;
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                ProtocolVersionIndex] =
-        CanProtocol::ProtocolVersion;
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                StatusFlagsIndex] =
-        CanProtocol::
-            VehicleHealthStatus::
-                SystemHealthyFlag |
-        CanProtocol::
-            VehicleHealthStatus::
-                SelectedTemperatureValidFlag |
-        CanProtocol::
-            VehicleHealthStatus::
-                SensorAAvailableFlag |
-        CanProtocol::
-            VehicleHealthStatus::
-                SensorBAvailableFlag;
-
-    constexpr std::int16_t
-        TestTemperatureDeciCelsius = 247;
-
-    const std::uint16_t
-        testTemperatureUnsigned =
-            static_cast<std::uint16_t>(
-                TestTemperatureDeciCelsius);
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                TemperatureLowByteIndex] =
-        static_cast<std::uint8_t>(
-            testTemperatureUnsigned &
-            0xFFU);
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                TemperatureHighByteIndex] =
-        static_cast<std::uint8_t>(
-            (testTemperatureUnsigned >>
-             8U) &
-            0xFFU);
-
-    constexpr std::uint32_t
-        TestFaultMask = 0x00000020U;
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                FaultMaskByte0Index] =
-        static_cast<std::uint8_t>(
-            TestFaultMask &
-            0xFFU);
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                FaultMaskByte1Index] =
-        static_cast<std::uint8_t>(
-            (TestFaultMask >>
-             8U) &
-            0xFFU);
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                FaultMaskByte2Index] =
-        static_cast<std::uint8_t>(
-            (TestFaultMask >>
-             16U) &
-            0xFFU);
-
-    testFrame.data[
-        CanProtocol::
-            VehicleHealthStatus::
-                FaultMaskByte3Index] =
-        static_cast<std::uint8_t>(
-            (TestFaultMask >>
-             24U) &
-            0xFFU);
+    CanFrame testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            247);
 
     constexpr std::uint32_t
         TestReceiveTimeMs = 1000U;
@@ -327,9 +432,9 @@ void Application::runRemoteStatusSelfTest()
         testStatus.sensorAAvailable() &&
         testStatus.sensorBAvailable() &&
         (testStatus.temperatureDeciCelsius() ==
-         TestTemperatureDeciCelsius) &&
+         247) &&
         (testStatus.faultMask() ==
-         TestFaultMask) &&
+         0U) &&
         (testStatus.communicationState() ==
          RemoteCommunicationState::
              Connected);
@@ -359,6 +464,177 @@ void Application::runRemoteStatusSelfTest()
     {
         transmitText(
             "REMOTE STATUS SELF TEST FAILED\r\n");
+    }
+}
+
+void Application::runThermalControlSelfTest()
+{
+    RemoteVehicleStatus testStatus{};
+
+    ThermalControlStateMachine
+        testStateMachine{};
+
+    testStatus.reset();
+
+    testStateMachine.reset();
+
+    std::uint32_t testTimeMs = 1000U;
+
+    bool passed = true;
+
+    CanFrame testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            250);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Normal;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            350);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Warm;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            450);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Cooling;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            550);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::High;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            600);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Critical;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            false,
+            600);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Safe;
+
+    ++testTimeMs;
+
+    testFrame =
+        buildTestVehicleHealthFrame(
+            true,
+            450);
+
+    passed &=
+        testStatus.processFrame(
+            testFrame,
+            testTimeMs);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Cooling;
+
+    testStatus.updateCommunicationState(
+        testTimeMs +
+        RemoteVehicleStatus::
+            CommunicationTimeoutMs +
+        1U);
+
+    testStateMachine.update(
+        testStatus);
+
+    passed &=
+        testStateMachine.state() ==
+        ThermalControlState::Safe;
+
+    if (passed)
+    {
+        transmitText(
+            "THERMAL CONTROL SELF TEST PASSED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "THERMAL CONTROL SELF TEST FAILED\r\n");
     }
 }
 

@@ -101,6 +101,11 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Wraparound-safe elapsed-time checking with `HAL_GetTick()`
 - Software-only remote-status self-test using a synthetic CAN frame
 - UART reporting when the remote communication state changes
+- Thermal states: `NORMAL`, `WARM`, `COOLING`, `HIGH`, `CRITICAL`, and `SAFE`
+- Thermal decisions based on trusted remote temperature plus communication freshness
+- Safe-state selection when remote temperature is invalid or communication is unavailable
+- Software-only thermal-state self-test covering all thermal states without physical CAN hardware
+- UART reporting when the thermal-control state changes
 
 ## Current CAN Validation Status
 
@@ -389,6 +394,36 @@ can_rx_count=1 protocol=1 remote_healthy=1 remote_temp_valid=1 remote_sensor_a=1
 ```text
 24.7°C
 ```
+
+## Board 2 Thermal-Control State Machine
+
+Board 2 converts the latest trusted remote temperature into a higher-level thermal-control state.
+
+```text
+NORMAL
+WARM
+COOLING
+HIGH
+CRITICAL
+SAFE
+```
+
+Current bench-prototype thresholds are:
+
+```text
+NORMAL    below 35.0°C
+WARM      35.0°C to below 45.0°C
+COOLING   45.0°C to below 55.0°C
+HIGH      55.0°C to below 60.0°C
+CRITICAL  60.0°C and above
+SAFE      communication unavailable/lost or selected temperature invalid
+```
+
+The state machine intentionally does not require the remote `systemHealthy` flag to be true before using a valid selected temperature. Board 1 can be globally faulted while still operating in a valid degraded single-sensor temperature mode.
+
+Board 2 therefore treats communication freshness and selected-temperature validity as the gating conditions for thermal decisions.
+
+The current state machine is software-only and does not yet command a physical fan, LED, or buzzer. A synthetic self-test validates every state without requiring CAN transceiver hardware.
 
 ## Temperature-Sensor Configuration
 
@@ -1053,6 +1088,8 @@ Verified in the current two-project software structure:
 - Board 2 stores the latest valid remote vehicle-health state
 - Board 2 remote-status software self-test validates decoding and timeout behavior without a physical CAN bus
 - Board 2 communication supervision distinguishes waiting, connected, and communication-lost states
+- Board 2 thermal-control self-test validates `NORMAL`, `WARM`, `COOLING`, `HIGH`, `CRITICAL`, and `SAFE`
+- Board 2 thermal state defaults to `SAFE` while real CAN data is unavailable
 
 Pending physical validation:
 
@@ -1123,8 +1160,11 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Keep the low-level CAN transport separate from application message policy
 - Share CAN message layout definitions between nodes
 - Store decoded remote-node state separately from low-level CAN transport
+- Keep thermal-control policy separate from CAN transport and frame decoding
+- Base actuator policy on trusted application state rather than raw network bytes
 - Use explicit communication states instead of treating missing data as valid data
 - Use wraparound-safe elapsed-time comparisons for communication supervision
+- Enter a defined safe state when required remote data is stale or invalid
 - Validate software transport paths independently from physical CAN hardware
 - Do not claim physical CAN communication as verified until both nodes exchange and acknowledge frames on the real bus
 - Continue operating when a noncritical external peripheral is unavailable
