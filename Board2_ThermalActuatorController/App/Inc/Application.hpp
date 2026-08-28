@@ -1,6 +1,7 @@
 #ifndef APPLICATION_HPP
 #define APPLICATION_HPP
 
+#include "ActuatorCommandPolicy.hpp"
 #include "CanBus.hpp"
 #include "RemoteVehicleStatus.hpp"
 #include "ThermalControlStateMachine.hpp"
@@ -31,9 +32,13 @@ private:
     void reportThermalControlState(
         ThermalControlState state);
 
+    void reportActuatorCommand();
+
     void runRemoteStatusSelfTest();
 
     void runThermalControlSelfTest();
+
+    void runActuatorCommandSelfTest();
 
     void transmitText(
         const char* text);
@@ -45,6 +50,9 @@ private:
 
     ThermalControlStateMachine
         thermalControlStateMachine_;
+
+    ActuatorCommandPolicy
+        actuatorCommandPolicy_;
 
     RemoteCommunicationState
         previousCommunicationState_{

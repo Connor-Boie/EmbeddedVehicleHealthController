@@ -122,11 +122,9 @@ This distinction keeps software validation separate from physical-layer validati
 - Physical CAN communication validation between the two STM32 nodes
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
-- Board 2 thermal-control state machine
-- PWM cooling output
-- External LED warning indication
-- Buzzer warning patterns
-- Board 2 safe-state behavior
+- Physical PWM cooling output
+- Physical RGB LED warning indication
+- Physical passive-buzzer output
 - Board 2 watchdog supervision
 - USER button actuator self-test or warning acknowledgement
 - Board 2 actuator/status frame transmitted back to Board 1
@@ -226,11 +224,15 @@ BOARD 2 — Thermal / Actuator Controller
         │
         ├── Vehicle Health Status decoder
         ├── UART diagnostics
-        ├── communication supervision planned
-        ├── thermal-control state machine planned
-        ├── PWM cooling output planned
-        ├── warning LED planned
-        ├── buzzer planned
+        ├── remote communication supervision
+        ├── thermal-control state machine
+        ├── actuator-command policy
+        │    ├── target cooling duty
+        │    ├── RGB warning color
+        │    └── buzzer warning pattern
+        ├── physical PWM cooling output planned
+        ├── physical RGB LED output planned
+        ├── physical passive-buzzer output planned
         └── actuator status feedback planned
 ```
 
@@ -424,6 +426,28 @@ The state machine intentionally does not require the remote `systemHealthy` flag
 Board 2 therefore treats communication freshness and selected-temperature validity as the gating conditions for thermal decisions.
 
 The current state machine is software-only and does not yet command a physical fan, LED, or buzzer. A synthetic self-test validates every state without requiring CAN transceiver hardware.
+
+## Board 2 Actuator-Command Policy
+
+Board 2 now converts each thermal-control state into a software-only actuator command. This layer remains independent of GPIO, timers, PWM channels, MOSFET hardware, the RGB LED, and the passive buzzer.
+
+Current command mapping:
+
+```text
+Thermal state   Cooling duty   RGB warning   Buzzer pattern
+NORMAL          0%             GREEN         OFF
+WARM            0%             YELLOW        OFF
+COOLING         40%            BLUE          OFF
+HIGH            70%            ORANGE        SLOW_BEEP
+CRITICAL        100%           RED           FAST_BEEP
+SAFE            100%           MAGENTA       FAULT
+```
+
+`SAFE` requests full cooling because stale or unavailable temperature data should not silently disable cooling. The physical fan is not driven in this checkpoint; these percentages are target commands only.
+
+The `40%` and `70%` cooling values are initial control-policy targets, not yet validated fan operating points. When the fan and MOSFET are connected, the minimum reliable startup duty and useful PWM range will be measured and the policy can be tuned if needed.
+
+A synthetic actuator-command self-test verifies every mapping without requiring the physical CAN transceivers, fan, MOSFET, RGB LED, or buzzer.
 
 ## Temperature-Sensor Configuration
 
@@ -1090,6 +1114,8 @@ Verified in the current two-project software structure:
 - Board 2 communication supervision distinguishes waiting, connected, and communication-lost states
 - Board 2 thermal-control self-test validates `NORMAL`, `WARM`, `COOLING`, `HIGH`, `CRITICAL`, and `SAFE`
 - Board 2 thermal state defaults to `SAFE` while real CAN data is unavailable
+- Board 2 actuator-command self-test validates cooling-duty, RGB-color, and buzzer-pattern mappings for every thermal state
+- Board 2 safe-state actuator command requests 100% target cooling with distinct warning outputs
 
 Pending physical validation:
 
@@ -1117,9 +1143,9 @@ CRITICAL
 SAFE
 ```
 
-Cooling output will increase gradually with temperature using PWM rather than operating only as a simple on/off output.
+Board 2 now defines software target cooling duties of 0%, 40%, 70%, or 100% depending on thermal state. Physical PWM generation and fan-drive validation remain future hardware steps.
 
-Board 2 will also provide visible and audible warning behavior through an external LED and buzzer.
+Board 2 also defines RGB warning-color and passive-buzzer pattern commands in software. Physical LED and buzzer driving remain future hardware steps.
 
 Board 2 already contains software-level remote communication supervision. It tracks whether it is still waiting for its first valid frame, currently connected, or has exceeded the communication timeout after previously receiving valid traffic. Physical timeout behavior will be validated after the replacement CAN transceivers are installed.
 
@@ -1162,6 +1188,10 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Store decoded remote-node state separately from low-level CAN transport
 - Keep thermal-control policy separate from CAN transport and frame decoding
 - Base actuator policy on trusted application state rather than raw network bytes
+- Keep actuator command policy separate from physical GPIO/PWM implementation
+- Represent cooling, visual warning, and audible warning as explicit commands
+- Use conservative full-cooling behavior when required remote data is unavailable
+- Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
 - Use wraparound-safe elapsed-time comparisons for communication supervision
 - Enter a defined safe state when required remote data is stale or invalid

@@ -112,6 +112,69 @@ CanFrame buildTestVehicleHealthFrame(
     return frame;
 }
 
+const char* warningColorName(
+    WarningColor color)
+{
+    switch (color)
+    {
+        case WarningColor::Green:
+            return "GREEN";
+
+        case WarningColor::Yellow:
+            return "YELLOW";
+
+        case WarningColor::Blue:
+            return "BLUE";
+
+        case WarningColor::Orange:
+            return "ORANGE";
+
+        case WarningColor::Red:
+            return "RED";
+
+        case WarningColor::Magenta:
+            return "MAGENTA";
+    }
+
+    return "UNKNOWN";
+}
+
+const char* buzzerPatternName(
+    BuzzerPattern pattern)
+{
+    switch (pattern)
+    {
+        case BuzzerPattern::Off:
+            return "OFF";
+
+        case BuzzerPattern::SlowBeep:
+            return "SLOW_BEEP";
+
+        case BuzzerPattern::FastBeep:
+            return "FAST_BEEP";
+
+        case BuzzerPattern::Fault:
+            return "FAULT";
+    }
+
+    return "UNKNOWN";
+}
+
+bool actuatorCommandMatches(
+    const ActuatorCommand& command,
+    std::uint8_t expectedCoolingDutyPercent,
+    WarningColor expectedColor,
+    BuzzerPattern expectedBuzzerPattern)
+{
+    return
+        (command.coolingDutyPercent ==
+         expectedCoolingDutyPercent) &&
+        (command.warningColor ==
+         expectedColor) &&
+        (command.buzzerPattern ==
+         expectedBuzzerPattern);
+}
+
 }
 
 Application::Application()
@@ -124,6 +187,8 @@ void Application::initialize()
     remoteVehicleStatus_.reset();
 
     thermalControlStateMachine_.reset();
+
+    actuatorCommandPolicy_.reset();
 
     communicationStateInitialized_ =
         false;
@@ -146,6 +211,8 @@ void Application::initialize()
 
     runThermalControlSelfTest();
 
+    runActuatorCommandSelfTest();
+
     reportCommunicationState(
         remoteVehicleStatus_.
             communicationState());
@@ -160,16 +227,24 @@ void Application::initialize()
     thermalControlStateMachine_.update(
         remoteVehicleStatus_);
 
+    const ThermalControlState
+        initialThermalState =
+            thermalControlStateMachine_.
+                state();
+
     reportThermalControlState(
-        thermalControlStateMachine_.
-            state());
+        initialThermalState);
 
     previousThermalControlState_ =
-        thermalControlStateMachine_.
-            state();
+        initialThermalState;
 
     thermalControlStateInitialized_ =
         true;
+
+    actuatorCommandPolicy_.update(
+        initialThermalState);
+
+    reportActuatorCommand();
 }
 
 void Application::run()
@@ -259,6 +334,11 @@ void Application::
 
         thermalControlStateInitialized_ =
             true;
+
+        actuatorCommandPolicy_.update(
+            currentState);
+
+        reportActuatorCommand();
     }
 }
 
@@ -403,6 +483,44 @@ void Application::
             break;
         }
     }
+}
+
+void Application::reportActuatorCommand()
+{
+    const ActuatorCommand& command =
+        actuatorCommandPolicy_.command();
+
+    char message[192]{};
+
+    const int length =
+        std::snprintf(
+            message,
+            sizeof(message),
+            "actuator_cooling_duty_pct=%u "
+            "actuator_led=%s "
+            "actuator_buzzer=%s\r\n",
+            static_cast<unsigned int>(
+                command.coolingDutyPercent),
+            warningColorName(
+                command.warningColor),
+            buzzerPatternName(
+                command.buzzerPattern));
+
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
+    {
+        return;
+    }
+
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            message),
+        static_cast<std::uint16_t>(
+            length),
+        UartTimeoutMs);
 }
 
 void Application::runRemoteStatusSelfTest()
@@ -635,6 +753,93 @@ void Application::runThermalControlSelfTest()
     {
         transmitText(
             "THERMAL CONTROL SELF TEST FAILED\r\n");
+    }
+}
+
+void Application::runActuatorCommandSelfTest()
+{
+    ActuatorCommandPolicy testPolicy{};
+
+    bool passed = true;
+
+    testPolicy.reset();
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            100U,
+            WarningColor::Magenta,
+            BuzzerPattern::Fault);
+
+    testPolicy.update(
+        ThermalControlState::Normal);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            0U,
+            WarningColor::Green,
+            BuzzerPattern::Off);
+
+    testPolicy.update(
+        ThermalControlState::Warm);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            0U,
+            WarningColor::Yellow,
+            BuzzerPattern::Off);
+
+    testPolicy.update(
+        ThermalControlState::Cooling);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            40U,
+            WarningColor::Blue,
+            BuzzerPattern::Off);
+
+    testPolicy.update(
+        ThermalControlState::High);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            70U,
+            WarningColor::Orange,
+            BuzzerPattern::SlowBeep);
+
+    testPolicy.update(
+        ThermalControlState::Critical);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            100U,
+            WarningColor::Red,
+            BuzzerPattern::FastBeep);
+
+    testPolicy.update(
+        ThermalControlState::Safe);
+
+    passed &=
+        actuatorCommandMatches(
+            testPolicy.command(),
+            100U,
+            WarningColor::Magenta,
+            BuzzerPattern::Fault);
+
+    if (passed)
+    {
+        transmitText(
+            "ACTUATOR COMMAND SELF TEST PASSED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "ACTUATOR COMMAND SELF TEST FAILED\r\n");
     }
 }
 
