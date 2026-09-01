@@ -190,6 +190,13 @@ void Application::initialize()
 
     actuatorCommandPolicy_.reset();
 
+    const std::uint32_t
+        currentTimeMs =
+            HAL_GetTick();
+
+    buzzerPatternSequencer_.reset(
+        currentTimeMs);
+
     communicationStateInitialized_ =
         false;
 
@@ -212,6 +219,8 @@ void Application::initialize()
     runThermalControlSelfTest();
 
     runActuatorCommandSelfTest();
+
+    runBuzzerTimingSelfTest();
 
     reportCommunicationState(
         remoteVehicleStatus_.
@@ -245,6 +254,14 @@ void Application::initialize()
         initialThermalState);
 
     reportActuatorCommand();
+
+    buzzerPatternSequencer_.update(
+        actuatorCommandPolicy_.
+            command().
+            buzzerPattern,
+        HAL_GetTick());
+
+    reportBuzzerTimingState();
 }
 
 void Application::run()
@@ -257,6 +274,8 @@ void Application::run()
     updateRemoteCommunicationState();
 
     updateThermalControlState();
+
+    updateBuzzerPatternTiming();
 }
 
 void Application::processCanReceive()
@@ -340,6 +359,16 @@ void Application::
 
         reportActuatorCommand();
     }
+}
+
+void Application::
+    updateBuzzerPatternTiming()
+{
+    buzzerPatternSequencer_.update(
+        actuatorCommandPolicy_.
+            command().
+            buzzerPattern,
+        HAL_GetTick());
 }
 
 void Application::
@@ -505,6 +534,44 @@ void Application::reportActuatorCommand()
                 command.warningColor),
             buzzerPatternName(
                 command.buzzerPattern));
+
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
+    {
+        return;
+    }
+
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            message),
+        static_cast<std::uint16_t>(
+            length),
+        UartTimeoutMs);
+}
+
+void Application::reportBuzzerTimingState()
+{
+    const char* outputState =
+        buzzerPatternSequencer_.
+                outputActive()
+            ? "ON"
+            : "OFF";
+
+    char message[128]{};
+
+    const int length =
+        std::snprintf(
+            message,
+            sizeof(message),
+            "buzzer_timing_pattern=%s "
+            "buzzer_output=%s\r\n",
+            buzzerPatternName(
+                buzzerPatternSequencer_.
+                    activePattern()),
+            outputState);
 
     if ((length <= 0) ||
         (length >=
@@ -840,6 +907,180 @@ void Application::runActuatorCommandSelfTest()
     {
         transmitText(
             "ACTUATOR COMMAND SELF TEST FAILED\r\n");
+    }
+}
+
+void Application::runBuzzerTimingSelfTest()
+{
+    BuzzerPatternSequencer
+        testSequencer{};
+
+    bool passed = true;
+
+    testSequencer.reset(0U);
+
+    testSequencer.update(
+        BuzzerPattern::Off,
+        100U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    constexpr std::uint32_t
+        SlowStartTimeMs = 1000U;
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        SlowStartTimeMs);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        SlowStartTimeMs + 249U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        SlowStartTimeMs + 250U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        SlowStartTimeMs + 999U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        SlowStartTimeMs + 1000U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    constexpr std::uint32_t
+        FastStartTimeMs = 3000U;
+
+    testSequencer.update(
+        BuzzerPattern::FastBeep,
+        FastStartTimeMs);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::FastBeep,
+        FastStartTimeMs + 199U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::FastBeep,
+        FastStartTimeMs + 200U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::FastBeep,
+        FastStartTimeMs + 400U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    constexpr std::uint32_t
+        FaultStartTimeMs = 5000U;
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 149U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 150U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 299U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 300U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 449U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 450U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    testSequencer.update(
+        BuzzerPattern::Fault,
+        FaultStartTimeMs + 1500U);
+
+    passed &=
+        testSequencer.outputActive();
+
+    constexpr std::uint32_t
+        WraparoundStartTimeMs =
+            0xFFFFFF00U;
+
+    testSequencer.reset(
+        WraparoundStartTimeMs);
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        WraparoundStartTimeMs);
+
+    testSequencer.update(
+        BuzzerPattern::SlowBeep,
+        0x00000020U);
+
+    passed &=
+        !testSequencer.outputActive();
+
+    if (passed)
+    {
+        transmitText(
+            "BUZZER TIMING SELF TEST PASSED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BUZZER TIMING SELF TEST FAILED\r\n");
     }
 }
 

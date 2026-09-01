@@ -2,6 +2,7 @@
 #define APPLICATION_HPP
 
 #include "ActuatorCommandPolicy.hpp"
+#include "BuzzerPatternSequencer.hpp"
 #include "CanBus.hpp"
 #include "RemoteVehicleStatus.hpp"
 #include "ThermalControlStateMachine.hpp"
@@ -24,6 +25,8 @@ private:
 
     void updateThermalControlState();
 
+    void updateBuzzerPatternTiming();
+
     void reportRemoteVehicleStatus();
 
     void reportCommunicationState(
@@ -34,11 +37,15 @@ private:
 
     void reportActuatorCommand();
 
+    void reportBuzzerTimingState();
+
     void runRemoteStatusSelfTest();
 
     void runThermalControlSelfTest();
 
     void runActuatorCommandSelfTest();
+
+    void runBuzzerTimingSelfTest();
 
     void transmitText(
         const char* text);
@@ -53,6 +60,9 @@ private:
 
     ActuatorCommandPolicy
         actuatorCommandPolicy_;
+
+    BuzzerPatternSequencer
+        buzzerPatternSequencer_;
 
     RemoteCommunicationState
         previousCommunicationState_{

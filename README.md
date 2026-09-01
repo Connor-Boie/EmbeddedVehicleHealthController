@@ -124,7 +124,7 @@ This distinction keeps software validation separate from physical-layer validati
 - Bidirectional CAN heartbeat supervision
 - Physical PWM cooling output
 - Physical RGB LED warning indication
-- Physical passive-buzzer output
+- Physical passive-buzzer tone generation and output
 - Board 2 watchdog supervision
 - USER button actuator self-test or warning acknowledgement
 - Board 2 actuator/status frame transmitted back to Board 1
@@ -230,6 +230,7 @@ BOARD 2 — Thermal / Actuator Controller
         │    ├── target cooling duty
         │    ├── RGB warning color
         │    └── buzzer warning pattern
+        ├── passive-buzzer pattern sequencer
         ├── physical PWM cooling output planned
         ├── physical RGB LED output planned
         ├── physical passive-buzzer output planned
@@ -448,6 +449,36 @@ SAFE            100%           MAGENTA       FAULT
 The `40%` and `70%` cooling values are initial control-policy targets, not yet validated fan operating points. When the fan and MOSFET are connected, the minimum reliable startup duty and useful PWM range will be measured and the policy can be tuned if needed.
 
 A synthetic actuator-command self-test verifies every mapping without requiring the physical CAN transceivers, fan, MOSFET, RGB LED, or buzzer.
+
+## Board 2 Passive-Buzzer Pattern Timing
+
+Board 2 now converts the high-level buzzer command into a non-blocking software timing signal. The timing layer does not yet generate an audible tone; it only decides whether a future tone-generation PWM output should currently be enabled.
+
+Current software timing:
+
+```text
+OFF         always inactive
+
+SLOW_BEEP   250 ms active
+            750 ms inactive
+            1000 ms total period
+
+FAST_BEEP   200 ms active
+            200 ms inactive
+            400 ms total period
+
+FAULT       150 ms active
+            150 ms inactive
+            150 ms active
+            1050 ms inactive
+            1500 ms total period
+```
+
+The `FAULT` pattern is intentionally a distinct double beep rather than a faster version of the temperature warning.
+
+Pattern changes restart the new timing sequence immediately. The implementation uses unsigned elapsed-time subtraction so the timing remains correct across the `HAL_GetTick()` 32-bit rollover.
+
+A synthetic timing self-test validates the on/off boundaries for every pattern without requiring a physical CAN bus, passive buzzer, timer PWM channel, or GPIO output.
 
 ## Temperature-Sensor Configuration
 
@@ -1116,6 +1147,7 @@ Verified in the current two-project software structure:
 - Board 2 thermal state defaults to `SAFE` while real CAN data is unavailable
 - Board 2 actuator-command self-test validates cooling-duty, RGB-color, and buzzer-pattern mappings for every thermal state
 - Board 2 safe-state actuator command requests 100% target cooling with distinct warning outputs
+- Board 2 buzzer-pattern timing self-test validates `OFF`, `SLOW_BEEP`, `FAST_BEEP`, and double-beep `FAULT` timing
 
 Pending physical validation:
 
@@ -1145,7 +1177,7 @@ SAFE
 
 Board 2 now defines software target cooling duties of 0%, 40%, 70%, or 100% depending on thermal state. Physical PWM generation and fan-drive validation remain future hardware steps.
 
-Board 2 also defines RGB warning-color and passive-buzzer pattern commands in software. Physical LED and buzzer driving remain future hardware steps.
+Board 2 also defines RGB warning-color and passive-buzzer pattern commands in software. The passive-buzzer pattern timing is now implemented as a non-blocking software sequencer; physical tone generation and buzzer driving remain future hardware steps.
 
 Board 2 already contains software-level remote communication supervision. It tracks whether it is still waiting for its first valid frame, currently connected, or has exceeded the communication timeout after previously receiving valid traffic. Physical timeout behavior will be validated after the replacement CAN transceivers are installed.
 
@@ -1190,6 +1222,8 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Base actuator policy on trusted application state rather than raw network bytes
 - Keep actuator command policy separate from physical GPIO/PWM implementation
 - Represent cooling, visual warning, and audible warning as explicit commands
+- Keep warning-pattern timing non-blocking so the main loop can continue servicing CAN and other tasks
+- Separate buzzer envelope timing from future audio-frequency PWM generation
 - Use conservative full-cooling behavior when required remote data is unavailable
 - Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
