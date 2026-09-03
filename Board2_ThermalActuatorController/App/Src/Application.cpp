@@ -8,6 +8,7 @@
 extern "C"
 {
 extern CAN_HandleTypeDef hcan1;
+extern TIM_HandleTypeDef htim3;
 extern UART_HandleTypeDef huart2;
 }
 
@@ -16,6 +17,9 @@ namespace
 
 constexpr std::uint32_t
     UartTimeoutMs = 100U;
+
+constexpr std::uint32_t
+    RgbSelfTestColorTimeMs = 250U;
 
 CanFrame buildTestVehicleHealthFrame(
     bool temperatureValid,
@@ -175,10 +179,30 @@ bool actuatorCommandMatches(
          expectedBuzzerPattern);
 }
 
+bool rgbIntensityMatches(
+    const RgbIntensityPercent& intensity,
+    std::uint8_t expectedRed,
+    std::uint8_t expectedGreen,
+    std::uint8_t expectedBlue)
+{
+    return
+        (intensity.red ==
+         expectedRed) &&
+        (intensity.green ==
+         expectedGreen) &&
+        (intensity.blue ==
+         expectedBlue);
+}
+
 }
 
 Application::Application()
-    : canBus_{&hcan1}
+    : canBus_{&hcan1},
+      rgbLed_{
+          &htim3,
+          TIM_CHANNEL_1,
+          TIM_CHANNEL_2,
+          TIM_CHANNEL_3}
 {
 }
 
@@ -214,6 +238,17 @@ void Application::initialize()
             "BOARD2 ERROR CAN NOT INITIALIZED\r\n");
     }
 
+    if (rgbLed_.initialize())
+    {
+        transmitText(
+            "BOARD2 READY RGB PWM INITIALIZED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BOARD2 ERROR RGB PWM NOT INITIALIZED\r\n");
+    }
+
     runRemoteStatusSelfTest();
 
     runThermalControlSelfTest();
@@ -221,6 +256,10 @@ void Application::initialize()
     runActuatorCommandSelfTest();
 
     runBuzzerTimingSelfTest();
+
+    runRgbMappingSelfTest();
+
+    runRgbHardwareSelfTest();
 
     reportCommunicationState(
         remoteVehicleStatus_.
@@ -254,6 +293,11 @@ void Application::initialize()
         initialThermalState);
 
     reportActuatorCommand();
+
+    rgbLed_.setColor(
+        actuatorCommandPolicy_.
+            command().
+            warningColor);
 
     buzzerPatternSequencer_.update(
         actuatorCommandPolicy_.
@@ -358,6 +402,11 @@ void Application::
             currentState);
 
         reportActuatorCommand();
+
+        rgbLed_.setColor(
+            actuatorCommandPolicy_.
+                command().
+                warningColor);
     }
 }
 
@@ -1082,6 +1131,125 @@ void Application::runBuzzerTimingSelfTest()
         transmitText(
             "BUZZER TIMING SELF TEST FAILED\r\n");
     }
+}
+
+void Application::runRgbMappingSelfTest()
+{
+    bool passed = true;
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Green),
+            0U,
+            100U,
+            0U);
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Yellow),
+            100U,
+            100U,
+            0U);
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Blue),
+            0U,
+            0U,
+            100U);
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Orange),
+            100U,
+            40U,
+            0U);
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Red),
+            100U,
+            0U,
+            0U);
+
+    passed &=
+        rgbIntensityMatches(
+            RgbLedPwm::intensityForColor(
+                WarningColor::Magenta),
+            100U,
+            0U,
+            100U);
+
+    if (passed)
+    {
+        transmitText(
+            "RGB MAPPING SELF TEST PASSED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "RGB MAPPING SELF TEST FAILED\r\n");
+    }
+}
+
+void Application::runRgbHardwareSelfTest()
+{
+    if (!rgbLed_.initialized())
+    {
+        transmitText(
+            "RGB HARDWARE SELF TEST NOT AVAILABLE\r\n");
+
+        return;
+    }
+
+    rgbLed_.setColor(
+        WarningColor::Green);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        WarningColor::Yellow);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        WarningColor::Blue);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        WarningColor::Orange);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        WarningColor::Red);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        WarningColor::Magenta);
+
+    HAL_Delay(
+        RgbSelfTestColorTimeMs);
+
+    rgbLed_.setColor(
+        actuatorCommandPolicy_.
+            command().
+            warningColor);
+
+    transmitText(
+        "RGB HARDWARE SELF TEST COMPLETE\r\n");
 }
 
 void Application::transmitText(

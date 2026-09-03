@@ -5,6 +5,7 @@
 #include "BuzzerPatternSequencer.hpp"
 #include "CanBus.hpp"
 #include "RemoteVehicleStatus.hpp"
+#include "RgbLedPwm.hpp"
 #include "ThermalControlStateMachine.hpp"
 
 #include <cstdint>
@@ -47,6 +48,10 @@ private:
 
     void runBuzzerTimingSelfTest();
 
+    void runRgbMappingSelfTest();
+
+    void runRgbHardwareSelfTest();
+
     void transmitText(
         const char* text);
 
@@ -63,6 +68,8 @@ private:
 
     BuzzerPatternSequencer
         buzzerPatternSequencer_;
+
+    RgbLedPwm rgbLed_;
 
     RemoteCommunicationState
         previousCommunicationState_{

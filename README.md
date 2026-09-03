@@ -123,7 +123,6 @@ This distinction keeps software validation separate from physical-layer validati
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
 - Physical PWM cooling output
-- Physical RGB LED warning indication
 - Physical passive-buzzer tone generation and output
 - Board 2 watchdog supervision
 - USER button actuator self-test or warning acknowledgement
@@ -158,7 +157,7 @@ This distinction keeps software validation separate from physical-layer validati
 - ST-LINK USB virtual COM port
 - CAN transceiver interface
 - On-board USER push button
-- External warning LED or RGB LED planned
+- 4-pin common-cathode RGB warning LED with three 330-ohm current-limiting resistors
 - Buzzer planned
 - PWM-controlled cooling fan or simulated actuator planned
 
@@ -231,8 +230,8 @@ BOARD 2 — Thermal / Actuator Controller
         │    ├── RGB warning color
         │    └── buzzer warning pattern
         ├── passive-buzzer pattern sequencer
+        ├── RGB warning LED PWM output
         ├── physical PWM cooling output planned
-        ├── physical RGB LED output planned
         ├── physical passive-buzzer output planned
         └── actuator status feedback planned
 ```
@@ -479,6 +478,48 @@ The `FAULT` pattern is intentionally a distinct double beep rather than a faster
 Pattern changes restart the new timing sequence immediately. The implementation uses unsigned elapsed-time subtraction so the timing remains correct across the `HAL_GetTick()` 32-bit rollover.
 
 A synthetic timing self-test validates the on/off boundaries for every pattern without requiring a physical CAN bus, passive buzzer, timer PWM channel, or GPIO output.
+
+## Board 2 RGB Warning LED
+
+Board 2 now drives a physical 4-pin common-cathode RGB LED using three TIM3 PWM channels.
+
+```text
+PA6 = TIM3_CH1 = red channel
+PA7 = TIM3_CH2 = green channel
+PB0 = TIM3_CH3 = blue channel
+```
+
+Each color channel uses its own 330-ohm current-limiting resistor. The LED common cathode connects to GND.
+
+TIM3 is configured for a 1-kHz PWM frequency using the 84-MHz APB1 timer clock:
+
+```text
+Prescaler = 839
+Counter period = 99
+
+84,000,000 / (839 + 1) = 100,000 timer counts/second
+100,000 / (99 + 1) = 1,000 PWM periods/second
+```
+
+Because one PWM period contains 100 timer counts, the logical percentage values map naturally to PWM duty-cycle targets. The driver still calculates compare values from the timer auto-reload value rather than hard-coding that assumption.
+
+Current RGB mapping:
+
+```text
+Warning color   Red   Green   Blue
+GREEN            0%    100%     0%
+YELLOW         100%     25%     0%
+BLUE             0%      0%   100%
+ORANGE         100%      5%     0%
+RED            100%      0%     0%
+MAGENTA        100%      0%    80%
+```
+
+`MAGENTA` is the runtime safe-state indication, distinguishing unavailable/stale remote data from the `RED` critical-temperature state. The mixed-color percentages are calibrated for the specific physical RGB LED used in this project.
+
+A bounded startup hardware self-test briefly displays all six warning colors and then restores the current actuator-policy color. Physical CAN is not required for this RGB validation.
+
+The final calibrated mixed-color targets for this LED are Yellow `{100, 25, 0}`, Orange `{100, 5, 0}`, and Magenta `{100, 0, 80}` because the physical LED's channels do not have equal perceived brightness.
 
 ## Temperature-Sensor Configuration
 
@@ -1148,6 +1189,9 @@ Verified in the current two-project software structure:
 - Board 2 actuator-command self-test validates cooling-duty, RGB-color, and buzzer-pattern mappings for every thermal state
 - Board 2 safe-state actuator command requests 100% target cooling with distinct warning outputs
 - Board 2 buzzer-pattern timing self-test validates `OFF`, `SLOW_BEEP`, `FAST_BEEP`, and double-beep `FAULT` timing
+- Board 2 TIM3 RGB PWM output initializes on three channels
+- Board 2 startup RGB hardware self-test displays all six warning colors
+- Board 2 runtime `SAFE` state drives the RGB LED to `MAGENTA` without requiring physical CAN
 
 Pending physical validation:
 
@@ -1177,7 +1221,7 @@ SAFE
 
 Board 2 now defines software target cooling duties of 0%, 40%, 70%, or 100% depending on thermal state. Physical PWM generation and fan-drive validation remain future hardware steps.
 
-Board 2 also defines RGB warning-color and passive-buzzer pattern commands in software. The passive-buzzer pattern timing is now implemented as a non-blocking software sequencer; physical tone generation and buzzer driving remain future hardware steps.
+Board 2 now drives the physical common-cathode RGB warning LED through TIM3 PWM while continuing to define passive-buzzer patterns in software. The passive-buzzer pattern timing is implemented as a non-blocking software sequencer; physical tone generation and buzzer driving remain future hardware steps.
 
 Board 2 already contains software-level remote communication supervision. It tracks whether it is still waiting for its first valid frame, currently connected, or has exceeded the communication timeout after previously receiving valid traffic. Physical timeout behavior will be validated after the replacement CAN transceivers are installed.
 
@@ -1224,6 +1268,9 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Represent cooling, visual warning, and audible warning as explicit commands
 - Keep warning-pattern timing non-blocking so the main loop can continue servicing CAN and other tasks
 - Separate buzzer envelope timing from future audio-frequency PWM generation
+- Use one independent current-limiting resistor per RGB LED channel
+- Keep logical warning colors separate from timer/PWM details
+- Convert normalized intensity percentages into timer compare values inside the RGB driver
 - Use conservative full-cooling behavior when required remote data is unavailable
 - Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
