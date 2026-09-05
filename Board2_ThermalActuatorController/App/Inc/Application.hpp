@@ -4,6 +4,7 @@
 #include "ActuatorCommandPolicy.hpp"
 #include "BuzzerPatternSequencer.hpp"
 #include "CanBus.hpp"
+#include "FanPwm.hpp"
 #include "RemoteVehicleStatus.hpp"
 #include "RgbLedPwm.hpp"
 #include "ThermalControlStateMachine.hpp"
@@ -40,6 +41,8 @@ private:
 
     void reportBuzzerTimingState();
 
+    void reportFanPwmState();
+
     void runRemoteStatusSelfTest();
 
     void runThermalControlSelfTest();
@@ -51,6 +54,8 @@ private:
     void runRgbMappingSelfTest();
 
     void runRgbHardwareSelfTest();
+
+    void runFanHardwareSelfTest();
 
     void transmitText(
         const char* text);
@@ -70,6 +75,8 @@ private:
         buzzerPatternSequencer_;
 
     RgbLedPwm rgbLed_;
+
+    FanPwm fanPwm_;
 
     RemoteCommunicationState
         previousCommunicationState_{

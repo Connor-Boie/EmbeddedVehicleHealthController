@@ -21,6 +21,12 @@ constexpr std::uint32_t
 constexpr std::uint32_t
     RgbSelfTestColorTimeMs = 250U;
 
+constexpr std::uint32_t
+    FanSelfTestDutyTimeMs = 1000U;
+
+constexpr std::uint32_t
+    FanSelfTestOffTimeMs = 500U;
+
 CanFrame buildTestVehicleHealthFrame(
     bool temperatureValid,
     std::int16_t temperatureDeciCelsius)
@@ -67,10 +73,9 @@ CanFrame buildTestVehicleHealthFrame(
                 StatusFlagsIndex] =
         statusFlags;
 
-    const std::uint16_t
-        temperatureUnsigned =
-            static_cast<std::uint16_t>(
-                temperatureDeciCelsius);
+    const std::uint16_t temperatureUnsigned =
+        static_cast<std::uint16_t>(
+            temperatureDeciCelsius);
 
     frame.data[
         CanProtocol::
@@ -202,7 +207,10 @@ Application::Application()
           &htim3,
           TIM_CHANNEL_1,
           TIM_CHANNEL_2,
-          TIM_CHANNEL_3}
+          TIM_CHANNEL_3},
+      fanPwm_{
+          &htim3,
+          TIM_CHANNEL_4}
 {
 }
 
@@ -214,9 +222,8 @@ void Application::initialize()
 
     actuatorCommandPolicy_.reset();
 
-    const std::uint32_t
-        currentTimeMs =
-            HAL_GetTick();
+    const std::uint32_t currentTimeMs =
+        HAL_GetTick();
 
     buzzerPatternSequencer_.reset(
         currentTimeMs);
@@ -249,6 +256,17 @@ void Application::initialize()
             "BOARD2 ERROR RGB PWM NOT INITIALIZED\r\n");
     }
 
+    if (fanPwm_.initialize())
+    {
+        transmitText(
+            "BOARD2 READY FAN PWM INITIALIZED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BOARD2 ERROR FAN PWM NOT INITIALIZED\r\n");
+    }
+
     runRemoteStatusSelfTest();
 
     runThermalControlSelfTest();
@@ -260,6 +278,8 @@ void Application::initialize()
     runRgbMappingSelfTest();
 
     runRgbHardwareSelfTest();
+
+    runFanHardwareSelfTest();
 
     reportCommunicationState(
         remoteVehicleStatus_.
@@ -299,6 +319,13 @@ void Application::initialize()
             command().
             warningColor);
 
+    fanPwm_.setDutyPercent(
+        actuatorCommandPolicy_.
+            command().
+            coolingDutyPercent);
+
+    reportFanPwmState();
+
     buzzerPatternSequencer_.update(
         actuatorCommandPolicy_.
             command().
@@ -328,9 +355,8 @@ void Application::processCanReceive()
 
     while (canBus_.receive(frame))
     {
-        const std::uint32_t
-            currentTimeMs =
-                HAL_GetTick();
+        const std::uint32_t currentTimeMs =
+            HAL_GetTick();
 
         const bool accepted =
             remoteVehicleStatus_.processFrame(
@@ -380,10 +406,9 @@ void Application::
     thermalControlStateMachine_.update(
         remoteVehicleStatus_);
 
-    const ThermalControlState
-        currentState =
-            thermalControlStateMachine_.
-                state();
+    const ThermalControlState currentState =
+        thermalControlStateMachine_.
+            state();
 
     if ((!thermalControlStateInitialized_) ||
         (currentState !=
@@ -407,6 +432,13 @@ void Application::
             actuatorCommandPolicy_.
                 command().
                 warningColor);
+
+        fanPwm_.setDutyPercent(
+            actuatorCommandPolicy_.
+                command().
+                coolingDutyPercent);
+
+        reportFanPwmState();
     }
 }
 
@@ -639,6 +671,35 @@ void Application::reportBuzzerTimingState()
         UartTimeoutMs);
 }
 
+void Application::reportFanPwmState()
+{
+    char message[96]{};
+
+    const int length =
+        std::snprintf(
+            message,
+            sizeof(message),
+            "fan_pwm_duty_pct=%u\r\n",
+            static_cast<unsigned int>(
+                fanPwm_.dutyPercent()));
+
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
+    {
+        return;
+    }
+
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            message),
+        static_cast<std::uint16_t>(
+            length),
+        UartTimeoutMs);
+}
+
 void Application::runRemoteStatusSelfTest()
 {
     RemoteVehicleStatus testStatus{};
@@ -705,8 +766,7 @@ void Application::runThermalControlSelfTest()
 {
     RemoteVehicleStatus testStatus{};
 
-    ThermalControlStateMachine
-        testStateMachine{};
+    ThermalControlStateMachine testStateMachine{};
 
     testStatus.reset();
 
@@ -961,8 +1021,7 @@ void Application::runActuatorCommandSelfTest()
 
 void Application::runBuzzerTimingSelfTest()
 {
-    BuzzerPatternSequencer
-        testSequencer{};
+    BuzzerPatternSequencer testSequencer{};
 
     bool passed = true;
 
@@ -1150,7 +1209,7 @@ void Application::runRgbMappingSelfTest()
             RgbLedPwm::intensityForColor(
                 WarningColor::Yellow),
             100U,
-            100U,
+            25U,
             0U);
 
     passed &=
@@ -1166,7 +1225,7 @@ void Application::runRgbMappingSelfTest()
             RgbLedPwm::intensityForColor(
                 WarningColor::Orange),
             100U,
-            40U,
+            5U,
             0U);
 
     passed &=
@@ -1183,7 +1242,7 @@ void Application::runRgbMappingSelfTest()
                 WarningColor::Magenta),
             100U,
             0U,
-            100U);
+            80U);
 
     if (passed)
     {
@@ -1250,6 +1309,48 @@ void Application::runRgbHardwareSelfTest()
 
     transmitText(
         "RGB HARDWARE SELF TEST COMPLETE\r\n");
+}
+
+void Application::runFanHardwareSelfTest()
+{
+    if (!fanPwm_.initialized())
+    {
+        transmitText(
+            "FAN HARDWARE SELF TEST NOT AVAILABLE\r\n");
+
+        return;
+    }
+
+    transmitText(
+        "FAN HARDWARE SELF TEST START\r\n");
+
+    fanPwm_.setDutyPercent(100U);
+
+    HAL_Delay(
+        FanSelfTestDutyTimeMs);
+
+    fanPwm_.setDutyPercent(70U);
+
+    HAL_Delay(
+        FanSelfTestDutyTimeMs);
+
+    fanPwm_.setDutyPercent(40U);
+
+    HAL_Delay(
+        FanSelfTestDutyTimeMs);
+
+    fanPwm_.setDutyPercent(0U);
+
+    HAL_Delay(
+        FanSelfTestOffTimeMs);
+
+    fanPwm_.setDutyPercent(
+        actuatorCommandPolicy_.
+            command().
+            coolingDutyPercent);
+
+    transmitText(
+        "FAN HARDWARE SELF TEST COMPLETE\r\n");
 }
 
 void Application::transmitText(

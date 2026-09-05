@@ -122,7 +122,6 @@ This distinction keeps software validation separate from physical-layer validati
 - Physical CAN communication validation between the two STM32 nodes
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
-- Physical PWM cooling output
 - Physical passive-buzzer tone generation and output
 - Board 2 watchdog supervision
 - USER button actuator self-test or warning acknowledgement
@@ -158,6 +157,9 @@ This distinction keeps software validation separate from physical-layer validati
 - CAN transceiver interface
 - On-board USER push button
 - 4-pin common-cathode RGB warning LED with three 330-ohm current-limiting resistors
+- 5 V two-wire brushless cooling fan
+- N-channel logic-level MOSFET for low-side fan switching
+- 100-ohm MOSFET gate resistor and 10-kilohm gate pull-down resistor
 - Buzzer planned
 - PWM-controlled cooling fan or simulated actuator planned
 
@@ -231,7 +233,7 @@ BOARD 2 — Thermal / Actuator Controller
         │    └── buzzer warning pattern
         ├── passive-buzzer pattern sequencer
         ├── RGB warning LED PWM output
-        ├── physical PWM cooling output planned
+        ├── cooling-fan PWM output through MOSFET
         ├── physical passive-buzzer output planned
         └── actuator status feedback planned
 ```
@@ -520,6 +522,46 @@ MAGENTA        100%      0%    80%
 A bounded startup hardware self-test briefly displays all six warning colors and then restores the current actuator-policy color. Physical CAN is not required for this RGB validation.
 
 The final calibrated mixed-color targets for this LED are Yellow `{100, 25, 0}`, Orange `{100, 5, 0}`, and Magenta `{100, 0, 80}` because the physical LED's channels do not have equal perceived brightness.
+
+## Board 2 Cooling-Fan PWM Output
+
+Board 2 now drives the physical 5 V two-wire cooling fan through an N-channel MOSFET. The STM32 does not supply the fan current directly; it supplies only the MOSFET gate-control signal.
+
+```text
+PB1 = TIM3_CH4 = fan PWM command
+
+NUCLEO +5V -> fan positive
+fan negative -> MOSFET drain
+MOSFET source -> GND
+
+PB1 -> 100-ohm resistor -> MOSFET gate
+MOSFET gate -> 10-kilohm resistor -> GND
+NUCLEO GND -> shared circuit GND
+```
+
+TIM3 channel 4 shares the same 1-kHz timer base already used by the RGB LED channels. The four TIM3 channels therefore share the same counter, prescaler, and auto-reload value, while each channel has its own capture/compare register and duty cycle.
+
+```text
+TIM3_CH1 / CCR1 -> RGB red
+TIM3_CH2 / CCR2 -> RGB green
+TIM3_CH3 / CCR3 -> RGB blue
+TIM3_CH4 / CCR4 -> cooling fan MOSFET gate
+```
+
+The fan driver accepts cooling commands as percentages and converts them to TIM3 compare values using the timer auto-reload value. The current actuator policy requests:
+
+```text
+NORMAL      0%
+WARM        0%
+COOLING    40%
+HIGH       70%
+CRITICAL  100%
+SAFE      100%
+```
+
+`SAFE` deliberately requests full cooling because missing or stale remote temperature information should not silently disable cooling.
+
+A bounded startup hardware self-test commands 100%, 70%, 40%, and 0% fan duty before restoring the current actuator-policy command. Because a small two-wire brushless fan contains internal electronics, actual speed versus PWM duty and minimum reliable startup duty are hardware-dependent and should be characterized on the physical fan.
 
 ## Temperature-Sensor Configuration
 
@@ -1192,6 +1234,9 @@ Verified in the current two-project software structure:
 - Board 2 TIM3 RGB PWM output initializes on three channels
 - Board 2 startup RGB hardware self-test displays all six warning colors
 - Board 2 runtime `SAFE` state drives the RGB LED to `MAGENTA` without requiring physical CAN
+- Board 2 TIM3 channel 4 fan PWM output initializes independently of the RGB channels
+- Board 2 startup fan hardware self-test exercises 100%, 70%, 40%, and 0% duty commands
+- Board 2 runtime `SAFE` state requests 100% cooling duty without requiring physical CAN
 
 Pending physical validation:
 
@@ -1271,6 +1316,9 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Use one independent current-limiting resistor per RGB LED channel
 - Keep logical warning colors separate from timer/PWM details
 - Convert normalized intensity percentages into timer compare values inside the RGB driver
+- Keep motor-load current off the STM32 GPIO by using a MOSFET as the fan power switch
+- Keep cooling commands expressed as percentages and isolate timer-register details inside the fan PWM driver
+- Treat minimum reliable two-wire fan duty as a hardware-calibration value rather than assuming every commanded duty will start the fan
 - Use conservative full-cooling behavior when required remote data is unavailable
 - Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
