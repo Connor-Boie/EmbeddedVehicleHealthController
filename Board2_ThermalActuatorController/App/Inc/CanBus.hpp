@@ -20,6 +20,9 @@ public:
 
     [[nodiscard]] bool initialize();
 
+    void service(
+        std::uint32_t currentTimeMs);
+
     [[nodiscard]] bool send(
         const CanFrame& frame);
 
@@ -49,6 +52,13 @@ private:
     static constexpr std::uint8_t
         MaximumPayloadLength = 8U;
 
+    static constexpr std::uint32_t
+        RecoveryRetryPeriodMs = 500U;
+
+    [[nodiscard]] bool configureAndStart();
+
+    [[nodiscard]] bool recover();
+
     CAN_HandleTypeDef* can_;
 
     std::uint32_t transmitCount_{0U};
@@ -56,7 +66,10 @@ private:
     std::uint32_t receiveCount_{0U};
     std::uint32_t receiveFailureCount_{0U};
 
+    std::uint32_t lastRecoveryAttemptTimeMs_{0U};
+
     bool initialized_{false};
+    bool recoveryAttempted_{false};
 };
 
 #endif

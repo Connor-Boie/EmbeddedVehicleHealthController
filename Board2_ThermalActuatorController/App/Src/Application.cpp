@@ -337,6 +337,12 @@ void Application::initialize()
 
 void Application::run()
 {
+    const std::uint32_t currentTimeMs =
+        HAL_GetTick();
+
+    canBus_.service(
+        currentTimeMs);
+
     if (canBus_.initialized())
     {
         processCanReceive();

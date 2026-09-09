@@ -2,13 +2,13 @@
 
 A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that models a distributed vehicle-health and thermal-control system across two STM32 nodes.
 
-Board 1 monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and prepares periodic vehicle-health status frames for CAN transmission.
+Board 1 monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and transmits periodic vehicle-health status frames over CAN.
 
-Board 2 provides the foundation for a remote thermal/actuator-control node. It initializes CAN in normal mode, receives and decodes the shared Vehicle Health Status message format, and reports decoded remote status through USART2.
+Board 2 is a remote thermal/actuator-control node. It receives and decodes Board 1's Vehicle Health Status frames, supervises CAN communication freshness, selects a thermal-control state, drives a PWM cooling fan and RGB warning LED, and enters a conservative safe state when required remote data becomes stale or unavailable.
 
 The project uses STM32CubeMX-generated hardware initialization together with separate application-owned C++ layers. Generated C code communicates with each board's C++ application through a small C-compatible bridge.
 
-The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors on Board 1 simulate redundant vehicle battery-temperature channels. Internal CAN loopback has been verified on Board 1. The two-node normal-mode CAN software framework builds successfully for both boards; physical CAN communication is awaiting final validation with replacement transceiver hardware.
+The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors on Board 1 simulate redundant vehicle battery-temperature channels. Board 1 internal CAN loopback and physical two-node CAN communication have both been verified. The two STM32 nodes exchange the shared `0x100` Vehicle Health Status frame over a real 500-kbit/s CAN bus through SN65HVD230 transceivers.
 
 ## Current Features
 
@@ -87,6 +87,7 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Matching 500-kbit/s CAN bit timing
 - Standard 11-bit CAN receive support
 - Receive FIFO 0 polling
+- Automatic recovery from CAN startup/HAL error state with bounded 500-ms retry attempts
 - Shared `0x100` Vehicle Health Status protocol decoding
 - Protocol-version validation
 - Payload-length validation
@@ -106,20 +107,22 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Safe-state selection when remote temperature is invalid or communication is unavailable
 - Software-only thermal-state self-test covering all thermal states without physical CAN hardware
 - UART reporting when the thermal-control state changes
+- Physical TIM3 PWM control of a common-cathode RGB warning LED
+- Physical TIM3 PWM control of a MOSFET-switched 5 V cooling fan
+- Safe-state output of magenta warning plus 100% cooling when trusted remote status is unavailable
 
 ## Current CAN Validation Status
 
 Board 1 CAN1 internal loopback has been verified successfully. That test demonstrated the STM32 bxCAN controller, receive filter, transmit mailbox path, receive FIFO path, standard identifier handling, payload serialization, and byte-for-byte receive verification without requiring an external transceiver.
 
-Both Board 1 and Board 2 now build with CAN1 configured in normal mode at 500 kbit/s. Board 1 can queue the shared Vehicle Health Status frame, and Board 2 initializes CAN successfully and waits for matching traffic.
+Physical two-node CAN communication is also verified. Both NUCLEO-F446RE boards run CAN1 in normal mode at 500 kbit/s through SN65HVD230 transceivers. Board 1 periodically transmits the shared standard-ID `0x100` Vehicle Health Status frame every 500 ms, and Board 2 receives and decodes the live system-health, temperature-validity, sensor-availability, selected-temperature, and fault-mask fields.
 
-Physical two-node CAN communication has not yet been declared verified. Initial external transceiver modules did not produce a valid differential dominant bus state during bench diagnostics, so replacement transceiver hardware will be used before physical-bus validation is completed.
+Verified behavior includes Board 2 transitioning from `SAFE` to `NORMAL` after valid room-temperature data is received, driving the RGB warning LED green, and reducing the cooling command from the safe-state 100% duty to 0%. Loss of valid Board 1 traffic for more than 1500 ms transitions Board 2 to `COMMUNICATION_LOST` and back to the defined `SAFE` actuator policy.
 
-This distinction keeps software validation separate from physical-layer validation.
+Board 2 also implements automatic CAN recovery. During physical bring-up, a startup-order condition could leave the HAL CAN handle in an error state after a start timeout. The `CanBus` service now detects when CAN is not in the listening state and performs a bounded recovery sequence with 500-ms retry spacing. This allows Board 2 to recover without requiring a manual reset when the remote node becomes available.
 
 ## Planned Features
 
-- Physical CAN communication validation between the two STM32 nodes
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
 - Physical passive-buzzer tone generation and output
@@ -345,7 +348,7 @@ The signed 16-bit value is serialized little-endian.
 
 The active fault mask is serialized as four little-endian bytes.
 
-The intended normal runtime behavior is periodic transmission every:
+The verified normal runtime behavior is periodic transmission every:
 
 ```text
 500 ms
@@ -427,7 +430,7 @@ The state machine intentionally does not require the remote `systemHealthy` flag
 
 Board 2 therefore treats communication freshness and selected-temperature validity as the gating conditions for thermal decisions.
 
-The current state machine is software-only and does not yet command a physical fan, LED, or buzzer. A synthetic self-test validates every state without requiring CAN transceiver hardware.
+A synthetic self-test validates every thermal state without requiring CAN transceiver hardware. During normal runtime, the selected state is also mapped into real fan and RGB LED outputs through the actuator-command policy.
 
 ## Board 2 Actuator-Command Policy
 
@@ -522,6 +525,46 @@ MAGENTA        100%      0%    80%
 A bounded startup hardware self-test briefly displays all six warning colors and then restores the current actuator-policy color. Physical CAN is not required for this RGB validation.
 
 The final calibrated mixed-color targets for this LED are Yellow `{100, 25, 0}`, Orange `{100, 5, 0}`, and Magenta `{100, 0, 80}` because the physical LED's channels do not have equal perceived brightness.
+
+## Physical Two-Node CAN Integration
+
+The project uses two Waveshare SN65HVD230 CAN transceiver boards to connect the STM32F446RE bxCAN controllers to a real two-node CAN bus.
+
+Each node is wired as:
+
+```text
+NUCLEO 3.3V  -> transceiver 3.3V
+NUCLEO GND   -> transceiver GND
+PA12 CAN_TX  -> transceiver CAN TX
+PA11 CAN_RX  <- transceiver CAN RX
+```
+
+Between the two transceiver boards:
+
+```text
+CANH -> CANH
+CANL -> CANL
+GND  -> GND
+```
+
+The Waveshare SN65HVD230 CAN Board includes a fixed 120-ohm termination resistor between CANH and CANL. With exactly two boards at the two ends of this project bus, both onboard termination resistors remain installed, producing approximately 60 ohms across CANH and CANL when the system is powered off. No additional external termination resistor is added.
+
+Both bxCAN controllers use normal mode at 500 kbit/s:
+
+```text
+Prescaler = 6
+BS1       = 11 TQ
+BS2       = 2 TQ
+SJW       = 1 TQ
+```
+
+With the 42 MHz CAN peripheral clock, this produces 500 kbit/s with a sample point of approximately 85.7%.
+
+Board 1 periodically transmits standard identifier `0x100` every 500 ms. The eight-byte payload contains protocol version, health/status flags, selected temperature in 0.1 degree Celsius units, and the active fault mask.
+
+Board 2 validates and decodes that frame, transitions its communication state from `WAITING_FOR_DATA` to `CONNECTED`, updates the thermal-control state machine, and applies the resulting cooling-fan and RGB warning commands. If valid frames stop arriving for more than 1500 ms, Board 2 transitions to `COMMUNICATION_LOST` and the thermal controller enters `SAFE`.
+
+The temporary internal-loopback RX pull-up used during Board 1 controller-only bring-up is not used with the physical transceiver. PA11 is configured with no internal pull resistor in normal CAN operation.
 
 ## Board 2 Cooling-Fan PWM Output
 
@@ -1247,13 +1290,11 @@ Pending physical validation:
 - sustained periodic two-node communication
 - fault and temperature propagation over the physical bus
 
-## Future Two-Node Behavior
+## Current Two-Node Behavior
 
-Board 1 will transmit system-health and temperature information over CAN.
+Board 1 transmits system-health and temperature information over CAN.
 
-Board 2 will use that information to determine the required thermal-control response.
-
-Planned thermal states include:
+Board 2 uses that information to determine the required thermal-control response:
 
 ```text
 NORMAL
@@ -1264,19 +1305,50 @@ CRITICAL
 SAFE
 ```
 
-Board 2 now defines software target cooling duties of 0%, 40%, 70%, or 100% depending on thermal state. Physical PWM generation and fan-drive validation remain future hardware steps.
+Board 2 commands cooling duties of 0%, 40%, 70%, or 100% depending on thermal state. The physical 5 V two-wire fan is driven through TIM3 PWM and an N-channel MOSFET power stage.
 
-Board 2 now drives the physical common-cathode RGB warning LED through TIM3 PWM while continuing to define passive-buzzer patterns in software. The passive-buzzer pattern timing is implemented as a non-blocking software sequencer; physical tone generation and buzzer driving remain future hardware steps.
+Board 2 also drives the physical common-cathode RGB warning LED through TIM3 PWM. The calibrated warning-color mapping is:
 
-Board 2 already contains software-level remote communication supervision. It tracks whether it is still waiting for its first valid frame, currently connected, or has exceeded the communication timeout after previously receiving valid traffic. Physical timeout behavior will be validated after the replacement CAN transceivers are installed.
+```text
+NORMAL    -> GREEN
+WARM      -> YELLOW
+COOLING   -> BLUE
+HIGH      -> ORANGE
+CRITICAL  -> RED
+SAFE      -> MAGENTA
+```
 
-Both nodes will ultimately supervise communication health.
+The passive-buzzer warning-pattern policy and non-blocking envelope sequencer are implemented in software; physical audio-frequency tone generation remains a future hardware step.
 
-Loss of communication will cause the affected node to report a communication fault and transition to defined safe behavior.
+Board 2 supervises the freshness of the shared `0x100` status frame. It tracks whether it is waiting for its first valid frame, connected to Board 1, or has exceeded the 1500-ms communication timeout after previously receiving valid traffic.
 
-Board 2 will transmit its own health, actuator status, and fault information back to Board 1.
+Loss of valid remote communication causes Board 2 to enter `SAFE`, command 100% cooling, select the magenta warning indication, and use the fault buzzer pattern.
 
-Board 1 will eventually store important remote-node events in persistent SPI flash.
+Board 2 also services CAN recovery continuously. If the HAL CAN peripheral is not in the listening state, the transport performs a bounded reinitialization attempt every 500 ms until communication can resume.
+
+Future distributed-system work includes Board 2 transmitting its own health and actuator status back to Board 1, Board 1 supervising the remote node, and persistent logging of important remote-node events.
+
+## Verified Physical CAN Behavior
+
+The physical two-node CAN link has been validated with the following observed behavior:
+
+```text
+- Approximately 60 ohms across CANH and CANL with both boards powered off
+- Both SN65HVD230 transceiver boards powered from 3.3 V
+- CANH connected to CANH and CANL connected to CANL
+- Shared ground between the two non-isolated nodes
+- Board 1 PA12 -> CAN TX and PA11 <- CAN RX
+- Board 2 PA12 -> CAN TX and PA11 <- CAN RX
+- Both CAN controllers operating in normal mode at 500 kbit/s
+- Board 1 periodic Vehicle Health Status transmission succeeds
+- Board 2 receives and decodes real Board 1 temperature and fault data
+- Board 2 `can_rx_count` increases with live traffic
+- Board 2 transitions to `CONNECTED` and `NORMAL` for valid room-temperature data
+- RGB output changes to green and fan duty changes to 0% in `NORMAL`
+- Communication loss produces `COMMUNICATION_LOST` and `SAFE`
+- `SAFE` commands magenta warning and 100% cooling
+- Board 2 automatically recovers from the observed CAN startup/HAL error condition without requiring a manual reset
+```
 
 ## Design Principles
 
@@ -1319,13 +1391,18 @@ Board 1 will eventually store important remote-node events in persistent SPI fla
 - Keep motor-load current off the STM32 GPIO by using a MOSFET as the fan power switch
 - Keep cooling commands expressed as percentages and isolate timer-register details inside the fan PWM driver
 - Treat minimum reliable two-wire fan duty as a hardware-calibration value rather than assuming every commanded duty will start the fan
+- Keep the CAN controller/protocol logic separate from the physical transceiver layer
+- Recover CAN transport state with bounded retry timing rather than requiring a manual node reset
+- Terminate a two-node CAN bus at both physical ends and avoid unnecessary extra termination
+- Use a shared ground reference between the two non-isolated CAN nodes
+- Fail Board 2 to the SAFE actuator policy when valid remote CAN status becomes stale
 - Use conservative full-cooling behavior when required remote data is unavailable
 - Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
 - Use wraparound-safe elapsed-time comparisons for communication supervision
 - Enter a defined safe state when required remote data is stale or invalid
 - Validate software transport paths independently from physical CAN hardware
-- Do not claim physical CAN communication as verified until both nodes exchange and acknowledge frames on the real bus
+- Validate physical CAN communication with real two-node traffic, acknowledgment, timeout behavior, and actuator-state response
 - Continue operating when a noncritical external peripheral is unavailable
 - Preserve watchdog recovery behavior during peripheral operations
-- Use defined safe-state behavior for future distributed-node failures
+- Use defined safe-state behavior for distributed-node communication failures

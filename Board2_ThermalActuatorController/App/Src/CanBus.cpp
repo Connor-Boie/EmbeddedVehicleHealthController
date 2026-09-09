@@ -9,6 +9,7 @@ CanBus::CanBus(
 bool CanBus::initialize()
 {
     initialized_ = false;
+    recoveryAttempted_ = false;
 
     if (can_ == nullptr)
     {
@@ -16,41 +17,67 @@ bool CanBus::initialize()
         return false;
     }
 
-    CAN_FilterTypeDef filter{};
-
-    filter.FilterBank = 0U;
-    filter.FilterMode = CAN_FILTERMODE_IDMASK;
-    filter.FilterScale = CAN_FILTERSCALE_32BIT;
-
-    filter.FilterIdHigh = 0U;
-    filter.FilterIdLow = 0U;
-
-    filter.FilterMaskIdHigh = 0U;
-    filter.FilterMaskIdLow = 0U;
-
-    filter.FilterFIFOAssignment =
-        CAN_RX_FIFO0;
-
-    filter.FilterActivation = ENABLE;
-
-    filter.SlaveStartFilterBank = 14U;
-
-    if (HAL_CAN_ConfigFilter(
-            can_,
-            &filter) != HAL_OK)
+    if (!configureAndStart())
     {
         ++receiveFailureCount_;
-        return false;
-    }
 
-    if (HAL_CAN_Start(can_) != HAL_OK)
-    {
-        ++receiveFailureCount_;
+        lastRecoveryAttemptTimeMs_ =
+            HAL_GetTick();
+
+        recoveryAttempted_ = true;
+
         return false;
     }
 
     initialized_ = true;
     return true;
+}
+
+void CanBus::service(
+    std::uint32_t currentTimeMs)
+{
+    if (can_ == nullptr)
+    {
+        return;
+    }
+
+    if (initialized_ &&
+        (HAL_CAN_GetState(can_) ==
+         HAL_CAN_STATE_LISTENING))
+    {
+        return;
+    }
+
+    initialized_ = false;
+
+    if (recoveryAttempted_)
+    {
+        const std::uint32_t
+            timeSinceRecoveryAttemptMs =
+                currentTimeMs -
+                lastRecoveryAttemptTimeMs_;
+
+        if (timeSinceRecoveryAttemptMs <
+            RecoveryRetryPeriodMs)
+        {
+            return;
+        }
+    }
+
+    lastRecoveryAttemptTimeMs_ =
+        currentTimeMs;
+
+    recoveryAttempted_ = true;
+
+    if (recover())
+    {
+        initialized_ = true;
+        recoveryAttempted_ = false;
+    }
+    else
+    {
+        ++receiveFailureCount_;
+    }
 }
 
 bool CanBus::send(
@@ -202,4 +229,60 @@ std::uint32_t
 CanBus::receiveFailureCount() const
 {
     return receiveFailureCount_;
+}
+
+bool CanBus::configureAndStart()
+{
+    CAN_FilterTypeDef filter{};
+
+    filter.FilterBank = 0U;
+    filter.FilterMode = CAN_FILTERMODE_IDMASK;
+    filter.FilterScale = CAN_FILTERSCALE_32BIT;
+
+    filter.FilterIdHigh = 0U;
+    filter.FilterIdLow = 0U;
+
+    filter.FilterMaskIdHigh = 0U;
+    filter.FilterMaskIdLow = 0U;
+
+    filter.FilterFIFOAssignment =
+        CAN_RX_FIFO0;
+
+    filter.FilterActivation = ENABLE;
+
+    filter.SlaveStartFilterBank = 14U;
+
+    if (HAL_CAN_ConfigFilter(
+            can_,
+            &filter) != HAL_OK)
+    {
+        return false;
+    }
+
+    if (HAL_CAN_Start(can_) != HAL_OK)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool CanBus::recover()
+{
+    if (can_ == nullptr)
+    {
+        return false;
+    }
+
+    if (HAL_CAN_DeInit(can_) != HAL_OK)
+    {
+        return false;
+    }
+
+    if (HAL_CAN_Init(can_) != HAL_OK)
+    {
+        return false;
+    }
+
+    return configureAndStart();
 }
