@@ -9,6 +9,7 @@ extern "C"
 {
 extern CAN_HandleTypeDef hcan1;
 extern TIM_HandleTypeDef htim3;
+extern TIM_HandleTypeDef htim4;
 extern UART_HandleTypeDef huart2;
 }
 
@@ -210,7 +211,10 @@ Application::Application()
           TIM_CHANNEL_3},
       fanPwm_{
           &htim3,
-          TIM_CHANNEL_4}
+          TIM_CHANNEL_4},
+      buzzerPwm_{
+          &htim4,
+          TIM_CHANNEL_1}
 {
 }
 
@@ -267,6 +271,17 @@ void Application::initialize()
             "BOARD2 ERROR FAN PWM NOT INITIALIZED\r\n");
     }
 
+    if (buzzerPwm_.initialize())
+    {
+        transmitText(
+            "BOARD2 READY BUZZER PWM INITIALIZED\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BOARD2 ERROR BUZZER PWM NOT INITIALIZED\r\n");
+    }
+
     runRemoteStatusSelfTest();
 
     runThermalControlSelfTest();
@@ -276,10 +291,6 @@ void Application::initialize()
     runBuzzerTimingSelfTest();
 
     runRgbMappingSelfTest();
-
-    runRgbHardwareSelfTest();
-
-    runFanHardwareSelfTest();
 
     reportCommunicationState(
         remoteVehicleStatus_.
@@ -331,6 +342,10 @@ void Application::initialize()
             command().
             buzzerPattern,
         HAL_GetTick());
+
+    buzzerPwm_.setEnabled(
+        buzzerPatternSequencer_.
+            outputActive());
 
     reportBuzzerTimingState();
 }
@@ -456,6 +471,10 @@ void Application::
             command().
             buzzerPattern,
         HAL_GetTick());
+
+    buzzerPwm_.setEnabled(
+        buzzerPatternSequencer_.
+            outputActive());
 }
 
 void Application::

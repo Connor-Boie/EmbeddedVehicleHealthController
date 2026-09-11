@@ -3,13 +3,12 @@
 
 #include "ActuatorCommandPolicy.hpp"
 #include "BuzzerPatternSequencer.hpp"
+#include "BuzzerPwm.hpp"
 #include "CanBus.hpp"
 #include "FanPwm.hpp"
 #include "RemoteVehicleStatus.hpp"
 #include "RgbLedPwm.hpp"
 #include "ThermalControlStateMachine.hpp"
-
-#include <cstdint>
 
 class Application
 {
@@ -17,7 +16,6 @@ public:
     Application();
 
     void initialize();
-
     void run();
 
 private:
@@ -61,22 +59,17 @@ private:
         const char* text);
 
     CanBus canBus_;
-
-    RemoteVehicleStatus
-        remoteVehicleStatus_;
-
-    ThermalControlStateMachine
-        thermalControlStateMachine_;
-
-    ActuatorCommandPolicy
-        actuatorCommandPolicy_;
-
-    BuzzerPatternSequencer
-        buzzerPatternSequencer_;
-
     RgbLedPwm rgbLed_;
-
     FanPwm fanPwm_;
+    BuzzerPwm buzzerPwm_;
+
+    RemoteVehicleStatus remoteVehicleStatus_{};
+    ThermalControlStateMachine
+        thermalControlStateMachine_{};
+    ActuatorCommandPolicy
+        actuatorCommandPolicy_{};
+    BuzzerPatternSequencer
+        buzzerPatternSequencer_{};
 
     RemoteCommunicationState
         previousCommunicationState_{
@@ -87,11 +80,8 @@ private:
         previousThermalControlState_{
             ThermalControlState::Safe};
 
-    bool communicationStateInitialized_{
-        false};
-
-    bool thermalControlStateInitialized_{
-        false};
+    bool communicationStateInitialized_{false};
+    bool thermalControlStateInitialized_{false};
 };
 
 #endif

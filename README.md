@@ -4,7 +4,7 @@ A bare-metal embedded C++ prototype for the STM32 NUCLEO-F446RE that models a di
 
 Board 1 monitors vehicle-oriented system health, acquires redundant temperature measurements, detects and records runtime faults, persists diagnostic events in external SPI flash, supports diagnostic fault injection, recovers from application stalls through an independent watchdog, reports reset causes, processes serial commands, and transmits periodic vehicle-health status frames over CAN.
 
-Board 2 is a remote thermal/actuator-control node. It receives and decodes Board 1's Vehicle Health Status frames, supervises CAN communication freshness, selects a thermal-control state, drives a PWM cooling fan and RGB warning LED, and enters a conservative safe state when required remote data becomes stale or unavailable.
+Board 2 is a remote thermal/actuator-control node. It receives and decodes Board 1's Vehicle Health Status frames, supervises CAN communication freshness, selects a thermal-control state, drives a PWM cooling fan, RGB warning LED, and passive-buzzer warning output, and enters a conservative safe state when required remote data becomes stale or unavailable.
 
 The project uses STM32CubeMX-generated hardware initialization together with separate application-owned C++ layers. Generated C code communicates with each board's C++ application through a small C-compatible bridge.
 
@@ -109,7 +109,9 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - UART reporting when the thermal-control state changes
 - Physical TIM3 PWM control of a common-cathode RGB warning LED
 - Physical TIM3 PWM control of a MOSFET-switched 5 V cooling fan
-- Safe-state output of magenta warning plus 100% cooling when trusted remote status is unavailable
+- TIM4 channel 1 audio-frequency PWM support for a passive buzzer
+- Non-blocking buzzer envelope timing driving the physical buzzer PWM enable state
+- Safe-state output of magenta warning plus 100% cooling and the fault buzzer pattern when trusted remote status is unavailable
 
 ## Current CAN Validation Status
 
@@ -125,7 +127,6 @@ Board 2 also implements automatic CAN recovery. During physical bring-up, a star
 
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
-- Physical passive-buzzer tone generation and output
 - Board 2 watchdog supervision
 - USER button actuator self-test or warning acknowledgement
 - Board 2 actuator/status frame transmitted back to Board 1
@@ -163,8 +164,11 @@ Board 2 also implements automatic CAN recovery. During physical bring-up, a star
 - 5 V two-wire brushless cooling fan
 - N-channel logic-level MOSFET for low-side fan switching
 - 100-ohm MOSFET gate resistor and 10-kilohm gate pull-down resistor
-- Buzzer planned
-- PWM-controlled cooling fan or simulated actuator planned
+- 5 V passive buzzer
+- N-channel logic-level MOSFET for low-side buzzer switching
+- 100-ohm buzzer MOSFET gate resistor and 10-kilohm gate pull-down resistor
+- 1N4007 flyback diode across the buzzer
+- Physical PWM-controlled cooling fan
 
 ## Repository Structure
 
@@ -237,7 +241,7 @@ BOARD 2 — Thermal / Actuator Controller
         ├── passive-buzzer pattern sequencer
         ├── RGB warning LED PWM output
         ├── cooling-fan PWM output through MOSFET
-        ├── physical passive-buzzer output planned
+        ├── passive-buzzer tone PWM output through MOSFET
         └── actuator status feedback planned
 ```
 
@@ -448,17 +452,35 @@ CRITICAL        100%           RED           FAST_BEEP
 SAFE            100%           MAGENTA       FAULT
 ```
 
-`SAFE` requests full cooling because stale or unavailable temperature data should not silently disable cooling. The physical fan is not driven in this checkpoint; these percentages are target commands only.
+`SAFE` requests full cooling because stale or unavailable temperature data should not silently disable cooling. The target percentages are applied to the physical fan through TIM3 channel 4.
 
-The `40%` and `70%` cooling values are initial control-policy targets, not yet validated fan operating points. When the fan and MOSFET are connected, the minimum reliable startup duty and useful PWM range will be measured and the policy can be tuned if needed.
+The `40%` and `70%` cooling values are current control-policy targets. The physical fan has been verified to respond to 40%, 70%, and 100% commands on the bench.
 
 A synthetic actuator-command self-test verifies every mapping without requiring the physical CAN transceivers, fan, MOSFET, RGB LED, or buzzer.
 
-## Board 2 Passive-Buzzer Pattern Timing
+## Board 2 Passive-Buzzer Output
 
-Board 2 now converts the high-level buzzer command into a non-blocking software timing signal. The timing layer does not yet generate an audible tone; it only decides whether a future tone-generation PWM output should currently be enabled.
+Board 2 converts the high-level buzzer command into two separate timing layers:
 
-Current software timing:
+```text
+ActuatorCommandPolicy
+        ↓
+BuzzerPattern
+        ↓
+BuzzerPatternSequencer
+        ↓
+outputActive()
+        ↓
+BuzzerPwm
+        ↓
+TIM4_CH1
+        ↓
+MOSFET
+        ↓
+5 V passive buzzer
+```
+
+The software envelope controls when the buzzer should be audible:
 
 ```text
 OFF         always inactive
@@ -482,7 +504,53 @@ The `FAULT` pattern is intentionally a distinct double beep rather than a faster
 
 Pattern changes restart the new timing sequence immediately. The implementation uses unsigned elapsed-time subtraction so the timing remains correct across the `HAL_GetTick()` 32-bit rollover.
 
-A synthetic timing self-test validates the on/off boundaries for every pattern without requiring a physical CAN bus, passive buzzer, timer PWM channel, or GPIO output.
+The physical tone uses a separate timer because TIM3 is already shared by the RGB LED and cooling fan. Board 2 uses:
+
+```text
+PB6 = TIM4_CH1 = buzzer PWM command
+```
+
+TIM4 is configured for an approximately 2-kHz PWM tone using the 84-MHz APB1 timer clock:
+
+```text
+Prescaler = 83
+Counter period = 499
+
+84,000,000 / (83 + 1) = 1,000,000 timer counts/second
+1,000,000 / (499 + 1) = 2,000 PWM periods/second
+```
+
+When the buzzer output is enabled, `BuzzerPwm` sets the channel compare value to half of the timer period, producing approximately 50% duty cycle. With `ARR = 499`, the compare value is:
+
+```text
+CCR1 = (499 + 1) / 2
+     = 250
+```
+
+When disabled, the compare register is set to zero so the PWM output remains low.
+
+The passive buzzer is driven through a low-side N-channel MOSFET rather than directly from the STM32 GPIO:
+
+```text
+NUCLEO +5V -> buzzer positive
+buzzer negative -> MOSFET drain
+MOSFET source -> GND
+
+PB6 / TIM4_CH1 -> 100-ohm resistor -> MOSFET gate
+MOSFET gate -> 10-kilohm resistor -> GND
+NUCLEO GND -> shared circuit GND
+```
+
+A 1N4007 flyback diode is connected directly across the buzzer:
+
+```text
+diode cathode / striped end -> +5 V / buzzer positive
+diode anode                 -> buzzer negative / MOSFET drain
+```
+
+The diode is normally reverse-biased and provides a current path for the buzzer's inductive energy when the MOSFET switches off.
+
+The existing software timing self-test continues to validate the envelope boundaries independently of the physical PWM output.
 
 ## Board 2 RGB Warning LED
 
@@ -521,8 +589,6 @@ MAGENTA        100%      0%    80%
 ```
 
 `MAGENTA` is the runtime safe-state indication, distinguishing unavailable/stale remote data from the `RED` critical-temperature state. The mixed-color percentages are calibrated for the specific physical RGB LED used in this project.
-
-A bounded startup hardware self-test briefly displays all six warning colors and then restores the current actuator-policy color. Physical CAN is not required for this RGB validation.
 
 The final calibrated mixed-color targets for this LED are Yellow `{100, 25, 0}`, Orange `{100, 5, 0}`, and Magenta `{100, 0, 80}` because the physical LED's channels do not have equal perceived brightness.
 
@@ -604,7 +670,7 @@ SAFE      100%
 
 `SAFE` deliberately requests full cooling because missing or stale remote temperature information should not silently disable cooling.
 
-A bounded startup hardware self-test commands 100%, 70%, 40%, and 0% fan duty before restoring the current actuator-policy command. Because a small two-wire brushless fan contains internal electronics, actual speed versus PWM duty and minimum reliable startup duty are hardware-dependent and should be characterized on the physical fan.
+The fan driver keeps timer-register details inside the hardware abstraction while the application continues to express cooling demand as a percentage. The previously used blocking startup hardware self-test is no longer called during normal startup so CAN initialization and recovery are not delayed.
 
 ## Temperature-Sensor Configuration
 
@@ -1275,20 +1341,20 @@ Verified in the current two-project software structure:
 - Board 2 safe-state actuator command requests 100% target cooling with distinct warning outputs
 - Board 2 buzzer-pattern timing self-test validates `OFF`, `SLOW_BEEP`, `FAST_BEEP`, and double-beep `FAULT` timing
 - Board 2 TIM3 RGB PWM output initializes on three channels
-- Board 2 startup RGB hardware self-test displays all six warning colors
+- Board 2 calibrated RGB warning colors have been verified on hardware
 - Board 2 runtime `SAFE` state drives the RGB LED to `MAGENTA` without requiring physical CAN
 - Board 2 TIM3 channel 4 fan PWM output initializes independently of the RGB channels
-- Board 2 startup fan hardware self-test exercises 100%, 70%, 40%, and 0% duty commands
+- Board 2 physical fan response has been verified at 40%, 70%, and 100% duty commands
 - Board 2 runtime `SAFE` state requests 100% cooling duty without requiring physical CAN
+- Board 2 TIM4 channel 1 buzzer PWM driver builds into the actuator-output path
+- Board 2 buzzer envelope state now directly enables or disables the physical tone PWM
 
 Pending physical validation:
 
-- external CAN transceiver operation
-- valid differential CANH/CANL signaling
-- Board 2 receipt of Board 1 `0x100` frames
-- CAN acknowledgment between nodes
-- sustained periodic two-node communication
-- fault and temperature propagation over the physical bus
+- passive-buzzer audible tone generation through TIM4_CH1 and the MOSFET stage
+- `FAULT` double-beep behavior while Board 2 is in `SAFE`
+- buzzer silence after valid room-temperature CAN traffic transitions Board 2 to `NORMAL`
+- `SLOW_BEEP` and `FAST_BEEP` audible behavior under `HIGH` and `CRITICAL` thermal states
 
 ## Current Two-Node Behavior
 
@@ -1318,7 +1384,7 @@ CRITICAL  -> RED
 SAFE      -> MAGENTA
 ```
 
-The passive-buzzer warning-pattern policy and non-blocking envelope sequencer are implemented in software; physical audio-frequency tone generation remains a future hardware step.
+The passive-buzzer warning-pattern policy, non-blocking envelope sequencer, and TIM4 audio-frequency PWM driver are implemented. Physical audible validation is the current hardware test step.
 
 Board 2 supervises the freshness of the shared `0x100` status frame. It tracks whether it is waiting for its first valid frame, connected to Board 1, or has exceeded the 1500-ms communication timeout after previously receiving valid traffic.
 
@@ -1384,11 +1450,14 @@ The physical two-node CAN link has been validated with the following observed be
 - Keep actuator command policy separate from physical GPIO/PWM implementation
 - Represent cooling, visual warning, and audible warning as explicit commands
 - Keep warning-pattern timing non-blocking so the main loop can continue servicing CAN and other tasks
-- Separate buzzer envelope timing from future audio-frequency PWM generation
+- Separate buzzer envelope timing from audio-frequency PWM generation
 - Use one independent current-limiting resistor per RGB LED channel
 - Keep logical warning colors separate from timer/PWM details
 - Convert normalized intensity percentages into timer compare values inside the RGB driver
 - Keep motor-load current off the STM32 GPIO by using a MOSFET as the fan power switch
+- Keep passive-buzzer load current off the STM32 GPIO by using a MOSFET as the buzzer power switch
+- Use a dedicated timer for the passive-buzzer audio frequency so RGB and fan PWM timing remain independent
+- Keep the flyback diode across the inductive buzzer load rather than across the complete 5 V supply
 - Keep cooling commands expressed as percentages and isolate timer-register details inside the fan PWM driver
 - Treat minimum reliable two-wire fan duty as a hardware-calibration value rather than assuming every commanded duty will start the fan
 - Keep the CAN controller/protocol logic separate from the physical transceiver layer
