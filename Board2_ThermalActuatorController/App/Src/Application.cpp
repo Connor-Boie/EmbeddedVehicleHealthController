@@ -28,6 +28,21 @@ constexpr std::uint32_t
 constexpr std::uint32_t
     FanSelfTestOffTimeMs = 500U;
 
+constexpr std::uint32_t
+    UserButtonDebounceTimeMs = 30U;
+
+constexpr std::uint32_t
+    UserButtonStartupArmTimeMs = 250U;
+
+constexpr std::uint32_t
+    StartupGracePeriodMs = 1000U;
+
+constexpr std::uint32_t
+    ActuatorSelfTestStageTimeMs = 3000U;
+
+constexpr std::uint8_t
+    ActuatorSelfTestStageCount = 5U;
+
 CanFrame buildTestVehicleHealthFrame(
     bool temperatureValid,
     std::int16_t temperatureDeciCelsius)
@@ -238,6 +253,12 @@ void Application::initialize()
     thermalControlStateInitialized_ =
         false;
 
+    startupGraceActive_ =
+        true;
+
+    startupTimeMs_ =
+        currentTimeMs;
+
     if (canBus_.initialize())
     {
         transmitText(
@@ -325,27 +346,61 @@ void Application::initialize()
 
     reportActuatorCommand();
 
+    activeOutputCommand_.coolingDutyPercent =
+        0U;
+
+    activeOutputCommand_.warningColor =
+        WarningColor::Green;
+
+    activeOutputCommand_.buzzerPattern =
+        BuzzerPattern::Off;
+
     rgbLed_.setColor(
-        actuatorCommandPolicy_.
-            command().
+        activeOutputCommand_.
             warningColor);
 
     fanPwm_.setDutyPercent(
-        actuatorCommandPolicy_.
-            command().
+        activeOutputCommand_.
             coolingDutyPercent);
+
+    buzzerPwm_.setEnabled(
+        false);
 
     reportFanPwmState();
 
+    userButtonRawPressed_ =
+        readUserButtonPressed();
+
+    userButtonDebouncedPressed_ =
+        userButtonRawPressed_;
+
+    userButtonArmed_ =
+        false;
+
+    userButtonRawChangeTimeMs_ =
+        HAL_GetTick();
+
+    userButtonReleaseStartTimeMs_ =
+        HAL_GetTick();
+
+    actuatorSelfTestActive_ =
+        false;
+
+    actuatorSelfTestStage_ =
+        0U;
+
+    actuatorSelfTestStageStartTimeMs_ =
+        HAL_GetTick();
+
+    buzzerPatternSequencer_.reset(
+        HAL_GetTick());
+
     buzzerPatternSequencer_.update(
-        actuatorCommandPolicy_.
-            command().
-            buzzerPattern,
+        BuzzerPattern::Off,
         HAL_GetTick());
 
     buzzerPwm_.setEnabled(
-        buzzerPatternSequencer_.
-            outputActive());
+        false);
 
     reportBuzzerTimingState();
 }
@@ -365,7 +420,48 @@ void Application::run()
 
     updateRemoteCommunicationState();
 
+    if (startupGraceActive_)
+    {
+        const bool connected =
+            remoteVehicleStatus_.
+                communicationState() ==
+            RemoteCommunicationState::
+                Connected;
+
+        const bool graceExpired =
+            (currentTimeMs -
+             startupTimeMs_) >=
+            StartupGracePeriodMs;
+
+        if (connected ||
+            graceExpired)
+        {
+            startupGraceActive_ =
+                false;
+        }
+    }
+
     updateThermalControlState();
+
+    if ((!startupGraceActive_) &&
+        (!actuatorSelfTestActive_) &&
+        (remoteVehicleStatus_.
+             communicationState() ==
+         RemoteCommunicationState::
+             WaitingForData))
+    {
+        activeOutputCommand_ =
+            actuatorCommandPolicy_.
+                command();
+
+        applyActiveOutputCommand();
+    }
+
+    updateUserButton(
+        currentTimeMs);
+
+    updateActuatorSelfTest(
+        currentTimeMs);
 
     updateBuzzerPatternTiming();
 }
@@ -449,32 +545,314 @@ void Application::
 
         reportActuatorCommand();
 
-        rgbLed_.setColor(
-            actuatorCommandPolicy_.
-                command().
-                warningColor);
+        if (!actuatorSelfTestActive_)
+        {
+            const bool holdQuietStartupOutputs =
+                startupGraceActive_ &&
+                (remoteVehicleStatus_.
+                     communicationState() ==
+                 RemoteCommunicationState::
+                     WaitingForData);
 
-        fanPwm_.setDutyPercent(
+            if (!holdQuietStartupOutputs)
+            {
+                activeOutputCommand_ =
+                    actuatorCommandPolicy_.
+                        command();
+
+                applyActiveOutputCommand();
+
+                reportFanPwmState();
+            }
+        }
+    }
+}
+
+void Application::
+    updateUserButton(
+        std::uint32_t currentTimeMs)
+{
+    const bool rawPressed =
+        readUserButtonPressed();
+
+    if (rawPressed !=
+        userButtonRawPressed_)
+    {
+        userButtonRawPressed_ =
+            rawPressed;
+
+        userButtonRawChangeTimeMs_ =
+            currentTimeMs;
+    }
+
+    if ((rawPressed !=
+         userButtonDebouncedPressed_) &&
+        ((currentTimeMs -
+          userButtonRawChangeTimeMs_) >=
+         UserButtonDebounceTimeMs))
+    {
+        userButtonDebouncedPressed_ =
+            rawPressed;
+
+        if (!userButtonDebouncedPressed_)
+        {
+            userButtonReleaseStartTimeMs_ =
+                currentTimeMs;
+        }
+        else if (userButtonArmed_)
+        {
+            startActuatorSelfTest(
+                currentTimeMs);
+        }
+    }
+
+    if (!userButtonArmed_)
+    {
+        if (userButtonDebouncedPressed_)
+        {
+            userButtonReleaseStartTimeMs_ =
+                currentTimeMs;
+
+            return;
+        }
+
+        if ((currentTimeMs -
+             userButtonReleaseStartTimeMs_) >=
+            UserButtonStartupArmTimeMs)
+        {
+            userButtonArmed_ =
+                true;
+        }
+    }
+}
+
+void Application::
+    startActuatorSelfTest(
+        std::uint32_t currentTimeMs)
+{
+    if (actuatorSelfTestActive_)
+    {
+        return;
+    }
+
+    actuatorSelfTestActive_ =
+        true;
+
+    actuatorSelfTestStage_ =
+        0U;
+
+    actuatorSelfTestStageStartTimeMs_ =
+        currentTimeMs;
+
+    activeOutputCommand_ =
+        actuatorSelfTestCommand(
+            actuatorSelfTestStage_);
+
+    applyActiveOutputCommand();
+
+    transmitText(
+        "ACTUATOR SELF TEST START\r\n");
+
+    reportActuatorSelfTestStage();
+}
+
+void Application::
+    updateActuatorSelfTest(
+        std::uint32_t currentTimeMs)
+{
+    if (!actuatorSelfTestActive_)
+    {
+        return;
+    }
+
+    const std::uint32_t elapsedTimeMs =
+        currentTimeMs -
+        actuatorSelfTestStageStartTimeMs_;
+
+    if (elapsedTimeMs <
+        ActuatorSelfTestStageTimeMs)
+    {
+        return;
+    }
+
+    ++actuatorSelfTestStage_;
+
+    if (actuatorSelfTestStage_ >=
+        ActuatorSelfTestStageCount)
+    {
+        actuatorSelfTestActive_ =
+            false;
+
+        activeOutputCommand_ =
             actuatorCommandPolicy_.
-                command().
-                coolingDutyPercent);
+                command();
+
+        applyActiveOutputCommand();
+
+        transmitText(
+            "ACTUATOR SELF TEST COMPLETE\r\n");
+
+        reportActuatorCommand();
 
         reportFanPwmState();
+
+        return;
     }
+
+    actuatorSelfTestStageStartTimeMs_ =
+        currentTimeMs;
+
+    activeOutputCommand_ =
+        actuatorSelfTestCommand(
+            actuatorSelfTestStage_);
+
+    applyActiveOutputCommand();
+
+    reportActuatorSelfTestStage();
+}
+
+void Application::
+    applyActiveOutputCommand()
+{
+    rgbLed_.setColor(
+        activeOutputCommand_.
+            warningColor);
+
+    fanPwm_.setDutyPercent(
+        activeOutputCommand_.
+            coolingDutyPercent);
 }
 
 void Application::
     updateBuzzerPatternTiming()
 {
     buzzerPatternSequencer_.update(
-        actuatorCommandPolicy_.
-            command().
+        activeOutputCommand_.
             buzzerPattern,
         HAL_GetTick());
 
     buzzerPwm_.setEnabled(
         buzzerPatternSequencer_.
             outputActive());
+}
+
+bool Application::
+    readUserButtonPressed() const
+{
+    return
+        HAL_GPIO_ReadPin(
+            B1_GPIO_Port,
+            B1_Pin) ==
+        GPIO_PIN_RESET;
+}
+
+ActuatorCommand
+Application::actuatorSelfTestCommand(
+    std::uint8_t stage) const
+{
+    ActuatorCommand command{};
+
+    switch (stage)
+    {
+        case 0U:
+        {
+            command.coolingDutyPercent =
+                0U;
+            command.warningColor =
+                WarningColor::Green;
+            command.buzzerPattern =
+                BuzzerPattern::Off;
+            break;
+        }
+
+        case 1U:
+        {
+            command.coolingDutyPercent =
+                40U;
+            command.warningColor =
+                WarningColor::Blue;
+            command.buzzerPattern =
+                BuzzerPattern::Off;
+            break;
+        }
+
+        case 2U:
+        {
+            command.coolingDutyPercent =
+                70U;
+            command.warningColor =
+                WarningColor::Orange;
+            command.buzzerPattern =
+                BuzzerPattern::SlowBeep;
+            break;
+        }
+
+        case 3U:
+        {
+            command.coolingDutyPercent =
+                100U;
+            command.warningColor =
+                WarningColor::Red;
+            command.buzzerPattern =
+                BuzzerPattern::FastBeep;
+            break;
+        }
+
+        default:
+        {
+            command.coolingDutyPercent =
+                100U;
+            command.warningColor =
+                WarningColor::Magenta;
+            command.buzzerPattern =
+                BuzzerPattern::Fault;
+            break;
+        }
+    }
+
+    return command;
+}
+
+void Application::
+    reportActuatorSelfTestStage()
+{
+    char message[192]{};
+
+    const int length =
+        std::snprintf(
+            message,
+            sizeof(message),
+            "actuator_self_test_stage=%u "
+            "cooling_duty_pct=%u "
+            "led=%s "
+            "buzzer=%s\r\n",
+            static_cast<unsigned int>(
+                actuatorSelfTestStage_),
+            static_cast<unsigned int>(
+                activeOutputCommand_.
+                    coolingDutyPercent),
+            warningColorName(
+                activeOutputCommand_.
+                    warningColor),
+            buzzerPatternName(
+                activeOutputCommand_.
+                    buzzerPattern));
+
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
+    {
+        return;
+    }
+
+    HAL_UART_Transmit(
+        &huart2,
+        reinterpret_cast<std::uint8_t*>(
+            message),
+        static_cast<std::uint16_t>(
+            length),
+        UartTimeoutMs);
 }
 
 void Application::

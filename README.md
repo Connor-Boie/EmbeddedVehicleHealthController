@@ -111,6 +111,9 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Physical TIM3 PWM control of a MOSFET-switched 5 V cooling fan
 - TIM4 channel 1 audio-frequency PWM support for a passive buzzer
 - Non-blocking buzzer envelope timing driving the physical buzzer PWM enable state
+- Debounced Board 2 USER button actuator self-test
+- Startup grace period that suppresses brief reset-time buzzer and SAFE-output artifacts
+- Non-blocking actuator self-test that preserves CAN servicing and communication supervision
 - Safe-state output of magenta warning plus 100% cooling and the fault buzzer pattern when trusted remote status is unavailable
 
 ## Current CAN Validation Status
@@ -128,7 +131,6 @@ Board 2 also implements automatic CAN recovery. During physical bring-up, a star
 - Persistent CAN communication and remote-node event history
 - Bidirectional CAN heartbeat supervision
 - Board 2 watchdog supervision
-- USER button actuator self-test or warning acknowledgement
 - Board 2 actuator/status frame transmitted back to Board 1
 - Remote actuator/status feedback
 - Remote-node fault propagation
@@ -242,6 +244,7 @@ BOARD 2 — Thermal / Actuator Controller
         ├── RGB warning LED PWM output
         ├── cooling-fan PWM output through MOSFET
         ├── passive-buzzer tone PWM output through MOSFET
+        ├── USER-button actuator self-test
         └── actuator status feedback planned
 ```
 
@@ -1039,7 +1042,50 @@ immediately transmits current UART telemetry
 
 The button does not control heartbeat state.
 
-Board 2's USER button is reserved for a future actuator self-test or warning-acknowledgement function.
+Board 2's USER button starts a non-blocking actuator self-test. The test is debounced in software and intentionally continues servicing CAN while the physical outputs are exercised.
+
+The self-test sequence uses five three-second stages:
+
+```text
+Stage 0   fan 0%     GREEN     buzzer OFF
+Stage 1   fan 40%    BLUE      buzzer OFF
+Stage 2   fan 70%    ORANGE    SLOW_BEEP
+Stage 3   fan 100%   RED       FAST_BEEP
+Stage 4   fan 100%   MAGENTA   FAULT
+```
+
+After the final stage, Board 2 restores the actuator command associated with the current live thermal-control state. CAN reception and communication supervision continue throughout the test; the self-test temporarily overrides only the physical actuator outputs.
+
+## Board 2 USER Button Actuator Self-Test
+
+Board 2 uses the on-board USER button as a local diagnostic input. The button is sampled from PC13 and debounced for 30 ms before a press is accepted.
+
+A valid press starts a five-stage actuator-output sequence without calling `HAL_Delay()`. Each stage lasts 3000 ms and is advanced from the normal main loop using `HAL_GetTick()`.
+
+```text
+PC13 USER button
+      ↓
+software debounce
+      ↓
+startActuatorSelfTest()
+      ↓
+non-blocking stage timer
+      ↓
+activeOutputCommand_
+      ├── RGB LED PWM
+      ├── cooling-fan PWM
+      └── buzzer pattern / tone PWM
+```
+
+The live thermal-control state and CAN status continue to update in the background during the test. Changes in the remote state update the normal actuator policy, but do not overwrite the physical test outputs while the self-test is active.
+
+When the final stage completes, the self-test clears its override and immediately restores the current actuator-policy command. This means the board returns to the correct `NORMAL`, `WARM`, `COOLING`, `HIGH`, `CRITICAL`, or `SAFE` output rather than returning to a hard-coded default.
+
+Repeated presses while the self-test is already active are ignored.
+
+At reset, Board 2 uses a short startup grace period before applying communication-failure outputs. During this grace period, the fan remains off and the buzzer remains silent while the node waits for the first valid CAN status frame. If communication is established during the grace period, the board transitions directly to the live thermal-control output. If no valid frame arrives before the grace period expires, the normal `SAFE` behavior is applied.
+
+The USER button input is treated as active-low on PC13. The button starts unarmed after reset and must first be observed released for a short interval before a subsequent press can start the actuator self-test. This prevents startup transients or rapid resets from being interpreted as diagnostic button presses.
 
 ## Independent Watchdog
 
@@ -1348,6 +1394,7 @@ Verified in the current two-project software structure:
 - Board 2 runtime `SAFE` state requests 100% cooling duty without requiring physical CAN
 - Board 2 TIM4 channel 1 buzzer PWM driver builds into the actuator-output path
 - Board 2 buzzer envelope state now directly enables or disables the physical tone PWM
+- Board 2 USER-button self-test software path cycles fan, RGB, and buzzer commands without blocking CAN servicing
 
 Pending physical validation:
 
@@ -1431,6 +1478,10 @@ The physical two-node CAN link has been validated with the following observed be
 - Separate active faults from latched fault history
 - Keep heartbeat behavior automatic and deterministic
 - Use the USER button for diagnostics rather than disabling system-health behavior
+- Keep actuator self-tests non-blocking so communication supervision continues during local diagnostics
+- Restore live actuator policy after a manual output override completes
+- Keep reset/startup outputs deterministic and quiet until communication state is established
+- Require the active-low USER button to be released before arming it after reset
 - Keep SPI chip selection explicit
 - Validate external flash identity during startup
 - Poll flash BUSY state before dependent operations
