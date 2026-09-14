@@ -9,6 +9,7 @@
 #include "RemoteVehicleStatus.hpp"
 #include "RgbLedPwm.hpp"
 #include "ThermalControlStateMachine.hpp"
+#include "Watchdog.hpp"
 
 #include <cstdint>
 
@@ -39,6 +40,9 @@ private:
     void applyActiveOutputCommand();
 
     void updateBuzzerPatternTiming();
+
+    void updateWatchdog(
+        std::uint32_t currentTimeMs);
 
     [[nodiscard]] bool
         readUserButtonPressed() const;
@@ -84,6 +88,7 @@ private:
     RgbLedPwm rgbLed_;
     FanPwm fanPwm_;
     BuzzerPwm buzzerPwm_;
+    Watchdog watchdog_;
 
     RemoteVehicleStatus remoteVehicleStatus_{};
     ThermalControlStateMachine
@@ -109,6 +114,9 @@ private:
 
     bool startupGraceActive_{true};
     std::uint32_t startupTimeMs_{0U};
+
+    std::uint32_t
+        watchdogLastRefreshTimeMs_{0U};
 
     bool userButtonRawPressed_{false};
     bool userButtonDebouncedPressed_{false};

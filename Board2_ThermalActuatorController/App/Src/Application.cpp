@@ -10,6 +10,7 @@ extern "C"
 extern CAN_HandleTypeDef hcan1;
 extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim4;
+extern IWDG_HandleTypeDef hiwdg;
 extern UART_HandleTypeDef huart2;
 }
 
@@ -36,6 +37,12 @@ constexpr std::uint32_t
 
 constexpr std::uint32_t
     StartupGracePeriodMs = 1000U;
+
+constexpr std::uint32_t
+    WatchdogRefreshPeriodMs = 500U;
+
+constexpr bool
+    WatchdogResetTestEnabled = false;
 
 constexpr std::uint32_t
     ActuatorSelfTestStageTimeMs = 3000U;
@@ -229,7 +236,8 @@ Application::Application()
           TIM_CHANNEL_4},
       buzzerPwm_{
           &htim4,
-          TIM_CHANNEL_1}
+          TIM_CHANNEL_1},
+      watchdog_{&hiwdg}
 {
 }
 
@@ -258,6 +266,20 @@ void Application::initialize()
 
     startupTimeMs_ =
         currentTimeMs;
+
+    watchdogLastRefreshTimeMs_ =
+        currentTimeMs;
+
+    if (watchdog_.refresh())
+    {
+        transmitText(
+            "BOARD2 READY WATCHDOG ACTIVE\r\n");
+    }
+    else
+    {
+        transmitText(
+            "BOARD2 ERROR WATCHDOG REFRESH FAILED\r\n");
+    }
 
     if (canBus_.initialize())
     {
@@ -403,6 +425,12 @@ void Application::initialize()
         false);
 
     reportBuzzerTimingState();
+
+    if (watchdog_.refresh())
+    {
+        watchdogLastRefreshTimeMs_ =
+            HAL_GetTick();
+    }
 }
 
 void Application::run()
@@ -464,6 +492,9 @@ void Application::run()
         currentTimeMs);
 
     updateBuzzerPatternTiming();
+
+    updateWatchdog(
+        currentTimeMs);
 }
 
 void Application::processCanReceive()
@@ -734,6 +765,37 @@ void Application::
     buzzerPwm_.setEnabled(
         buzzerPatternSequencer_.
             outputActive());
+}
+
+void Application::updateWatchdog(
+    std::uint32_t currentTimeMs)
+{
+    if (WatchdogResetTestEnabled)
+    {
+        return;
+    }
+
+    const std::uint32_t elapsedTimeMs =
+        currentTimeMs -
+        watchdogLastRefreshTimeMs_;
+
+    if (elapsedTimeMs <
+        WatchdogRefreshPeriodMs)
+    {
+        return;
+    }
+
+    const bool refreshed =
+        watchdog_.refresh();
+
+    watchdogLastRefreshTimeMs_ =
+        currentTimeMs;
+
+    if (!refreshed)
+    {
+        transmitText(
+            "BOARD2 ERROR WATCHDOG REFRESH FAILED\r\n");
+    }
 }
 
 bool Application::
