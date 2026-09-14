@@ -8,7 +8,7 @@ Board 2 is a remote thermal/actuator-control node. It receives and decodes Board
 
 The project uses STM32CubeMX-generated hardware initialization together with separate application-owned C++ layers. Generated C code communicates with each board's C++ application through a small C-compatible bridge.
 
-The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors on Board 1 simulate redundant vehicle battery-temperature channels. Board 1 internal CAN loopback and physical two-node CAN communication have both been verified. The two STM32 nodes exchange the shared `0x100` Vehicle Health Status frame over a real 500-kbit/s CAN bus through SN65HVD230 transceivers.
+The current hardware is a bench prototype. Two colocated MCP9808 temperature sensors on Board 1 simulate redundant vehicle battery-temperature channels. Board 1 internal CAN loopback and physical two-node CAN communication have both been verified. The two STM32 nodes exchange shared `0x100` Vehicle Health Status and `0x101` Thermal Actuator Status frames over a real 500-kbit/s CAN bus through SN65HVD230 transceivers.
 
 ## Current Features
 
@@ -68,6 +68,10 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Vehicle-health CAN frame serialization
 - CAN1 normal-mode configuration for physical two-node communication
 - Periodic Vehicle Health Status transmission framework
+- Reception and validation of Board 2 Thermal Actuator Status frames
+- Board 2 remote-node communication supervision with `WAITING_FOR_DATA`, `CONNECTED`, and `COMMUNICATION_LOST` states
+- 1500-ms Board 2 status timeout monitoring
+- UART reporting of Board 2 actuator state, fan duty, warning color, buzzer pattern, and self-test state
 - Manual `CAN TEST` transmit command
 - USART2 telemetry through the ST-LINK virtual COM port
 - Interrupt-driven UART byte reception
@@ -88,6 +92,10 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Standard 11-bit CAN receive support
 - Receive FIFO 0 polling
 - Automatic recovery from CAN startup/HAL error state with bounded 500-ms retry attempts
+- Independent hardware watchdog supervision with an approximately 2-second timeout
+- 500-ms watchdog refresh cadence during normal execution
+- Periodic `0x101` Thermal Actuator Status transmission every 500 ms
+- Bidirectional CAN communication with Board 1
 - Shared `0x100` Vehicle Health Status protocol decoding
 - Protocol-version validation
 - Payload-length validation
@@ -122,6 +130,8 @@ Board 1 CAN1 internal loopback has been verified successfully. That test demonst
 
 Physical two-node CAN communication is also verified. Both NUCLEO-F446RE boards run CAN1 in normal mode at 500 kbit/s through SN65HVD230 transceivers. Board 1 periodically transmits the shared standard-ID `0x100` Vehicle Health Status frame every 500 ms, and Board 2 receives and decodes the live system-health, temperature-validity, sensor-availability, selected-temperature, and fault-mask fields.
 
+The bus is now bidirectional. Board 2 periodically transmits standard-ID `0x101` Thermal Actuator Status frames every 500 ms. Board 1 validates and stores those frames, tracks Board 2 communication freshness, and reports remote actuator state through UART diagnostics. If valid Board 2 status traffic is absent for more than 1500 ms, Board 1 transitions the remote actuator communication state to `COMMUNICATION_LOST`.
+
 Verified behavior includes Board 2 transitioning from `SAFE` to `NORMAL` after valid room-temperature data is received, driving the RGB warning LED green, and reducing the cooling command from the safe-state 100% duty to 0%. Loss of valid Board 1 traffic for more than 1500 ms transitions Board 2 to `COMMUNICATION_LOST` and back to the defined `SAFE` actuator policy.
 
 Board 2 also implements automatic CAN recovery. During physical bring-up, a startup-order condition could leave the HAL CAN handle in an error state after a start timeout. The `CanBus` service now detects when CAN is not in the listening state and performs a bounded recovery sequence with 500-ms retry spacing. This allows Board 2 to recover without requiring a manual reset when the remote node becomes available.
@@ -129,12 +139,9 @@ Board 2 also implements automatic CAN recovery. During physical bring-up, a star
 ## Planned Features
 
 - Persistent CAN communication and remote-node event history
-- Bidirectional CAN heartbeat supervision
-- Board 2 watchdog supervision
-- Board 2 actuator/status frame transmitted back to Board 1
-- Remote actuator/status feedback
 - Remote-node fault propagation
-- Board 1 remote-node communication supervision
+- System-level fault injection and recovery validation
+- Persistent logging of important remote-node communication events
 - Host-side unit tests
 - Automated build and test integration
 - Final portfolio documentation and system diagrams
@@ -227,7 +234,10 @@ BOARD 1 — Vehicle Health Controller
            CANH/CANL
              │
          CAN TRANSCEIVER
-             ▼
+             ▲
+             │  Thermal Actuator Status
+             │  Standard ID 0x101
+             │
            CAN1
              │
 BOARD 2 — Thermal / Actuator Controller
@@ -245,7 +255,8 @@ BOARD 2 — Thermal / Actuator Controller
         ├── cooling-fan PWM output through MOSFET
         ├── passive-buzzer tone PWM output through MOSFET
         ├── USER-button actuator self-test
-        └── actuator status feedback planned
+        ├── independent watchdog supervision
+        └── periodic actuator status feedback to Board 1
 ```
 
 ## Shared CAN Protocol
@@ -290,6 +301,38 @@ When no trusted selected temperature is available, the encoded temperature uses 
 ```
 
 Using a shared protocol header prevents Board 1 and Board 2 from independently redefining message identifiers, byte indexes, status bits, or sentinel values.
+
+The second shared message is the Board 2 Thermal Actuator Status frame.
+
+```text
+Standard CAN ID: 0x101
+Payload length:  8 bytes
+Protocol version: 1
+```
+
+Payload layout:
+
+```text
+Byte 0   Protocol version
+Byte 1   Status flags
+Byte 2   Thermal-control state code
+Byte 3   Cooling-fan duty percentage
+Byte 4   Warning-color code
+Byte 5   Buzzer-pattern code
+Byte 6   Reserved
+Byte 7   Reserved
+```
+
+Status-flag bits:
+
+```text
+Bit 0 = Board 2 controller operational
+Bit 1 = Board 2 currently has valid Board 1 vehicle data
+Bit 2 = actuator self-test active
+Bit 3 = thermal controller currently in SAFE state
+```
+
+Board 1 accepts only frames with the expected identifier, length, protocol version, valid state/color/buzzer codes, and a cooling duty from 0 through 100 percent. Valid frames reset the remote-node timeout and transition Board 1's remote actuator communication state to `CONNECTED`.
 
 ## CAN1 Configuration
 
@@ -408,6 +451,41 @@ can_rx_count=1 protocol=1 remote_healthy=1 remote_temp_valid=1 remote_sensor_a=1
 ```text
 24.7°C
 ```
+
+## Board 2 CAN Transmission and Board 1 Remote Supervision
+
+Board 2 builds and transmits a Thermal Actuator Status frame every:
+
+```text
+500 ms
+```
+
+The frame reports:
+
+```text
+controller operational state
+whether Board 1 vehicle data is currently connected
+whether the actuator self-test is active
+whether the thermal controller is in SAFE
+thermal-control state
+current fan duty percentage
+current warning-color command
+current buzzer-pattern command
+```
+
+Board 1 continuously polls its CAN receive FIFO and passes `0x101` frames to `RemoteActuatorStatus`. Valid frames update the stored remote state and record the latest valid receive time.
+
+Board 1 uses a 1500-ms freshness timeout:
+
+```text
+No valid Board 2 frame yet  -> WAITING_FOR_DATA
+Valid Board 2 frame         -> CONNECTED
+No valid frame for >1500 ms -> COMMUNICATION_LOST
+```
+
+The timeout uses unsigned elapsed-time subtraction so it remains correct across the 32-bit `HAL_GetTick()` rollover.
+
+Periodic UART diagnostics on Board 1 now include the remote actuator receive count, a current `remote_actuator_connected` freshness flag, whether at least one valid remote frame has ever been received, the controller-operational flag, Board 2 view of Board 1 connectivity, actuator self-test state, SAFE-state flag, thermal-state code, fan duty, warning-color code, and buzzer-pattern code. The last valid remote actuator values are intentionally retained after communication loss for diagnostics, while `remote_actuator_connected=0` clearly marks those stored values as stale.
 
 ## Board 2 Thermal-Control State Machine
 
@@ -629,7 +707,7 @@ SJW       = 1 TQ
 
 With the 42 MHz CAN peripheral clock, this produces 500 kbit/s with a sample point of approximately 85.7%.
 
-Board 1 periodically transmits standard identifier `0x100` every 500 ms. The eight-byte payload contains protocol version, health/status flags, selected temperature in 0.1 degree Celsius units, and the active fault mask.
+Board 1 periodically transmits standard identifier `0x100` every 500 ms. The eight-byte payload contains protocol version, health/status flags, selected temperature in 0.1 degree Celsius units, and the active fault mask. Board 2 periodically transmits standard identifier `0x101` every 500 ms with its thermal/actuator status, allowing both nodes to supervise the other side of the distributed system.
 
 Board 2 validates and decodes that frame, transitions its communication state from `WAITING_FOR_DATA` to `CONNECTED`, updates the thermal-control state machine, and applies the resulting cooling-fan and RGB warning commands. If valid frames stop arriving for more than 1500 ms, Board 2 transitions to `COMMUNICATION_LOST` and the thermal controller enters `SAFE`.
 

@@ -11,6 +11,7 @@
 #include "Mcp9808.hpp"
 #include "PeriodicTimer.hpp"
 #include "ResetCauseDetector.hpp"
+#include "RemoteActuatorStatus.hpp"
 #include "TemperatureHealthMonitor.hpp"
 #include "UartCommandReceiver.hpp"
 #include "UartTelemetry.hpp"
@@ -122,6 +123,16 @@ public:
         watchdogRefreshEnabled() const;
 
 private:
+    void processCanReceive();
+
+    void updateRemoteActuatorCommunicationState(
+        std::uint32_t currentTimeMs);
+
+    void reportRemoteActuatorCommunicationState(
+        RemoteActuatorCommunicationState state);
+
+    void reportRemoteActuatorStatus();
+
     void processButton(
         std::uint32_t currentTimeMs);
 
@@ -176,6 +187,8 @@ private:
 
     CanBus canBus_;
 
+    RemoteActuatorStatus remoteActuatorStatus_{};
+
     UartCommandReceiver uartReceiver_;
     UartTelemetry telemetry_;
     Watchdog watchdog_;
@@ -210,6 +223,14 @@ private:
 
     std::uint32_t
         lastButtonTaskTimeMs_{0U};
+
+    RemoteActuatorCommunicationState
+        previousRemoteActuatorCommunicationState_{
+            RemoteActuatorCommunicationState::
+                WaitingForData};
+
+    bool remoteActuatorCommunicationStateInitialized_{
+        false};
 
     bool systemHealthy_{true};
     bool hardwareTimerActive_{false};

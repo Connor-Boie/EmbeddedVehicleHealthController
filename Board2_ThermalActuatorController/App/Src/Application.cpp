@@ -45,6 +45,12 @@ constexpr bool
     WatchdogResetTestEnabled = false;
 
 constexpr std::uint32_t
+    CanTransmitPeriodMs = 500U;
+
+constexpr bool
+    ThermalActuatorStatusTransmitEnabled = true;
+
+constexpr std::uint32_t
     ActuatorSelfTestStageTimeMs = 3000U;
 
 constexpr std::uint8_t
@@ -222,6 +228,110 @@ bool rgbIntensityMatches(
          expectedBlue);
 }
 
+std::uint8_t thermalStateCode(
+    ThermalControlState state)
+{
+    switch (state)
+    {
+        case ThermalControlState::Normal:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::Normal;
+
+        case ThermalControlState::Warm:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::Warm;
+
+        case ThermalControlState::Cooling:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::Cooling;
+
+        case ThermalControlState::High:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::High;
+
+        case ThermalControlState::Critical:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::Critical;
+
+        case ThermalControlState::Safe:
+        default:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    ThermalState::Safe;
+    }
+}
+
+std::uint8_t warningColorCode(
+    WarningColor color)
+{
+    switch (color)
+    {
+        case WarningColor::Green:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Green;
+
+        case WarningColor::Yellow:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Yellow;
+
+        case WarningColor::Blue:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Blue;
+
+        case WarningColor::Orange:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Orange;
+
+        case WarningColor::Red:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Red;
+
+        case WarningColor::Magenta:
+        default:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    WarningColor::Magenta;
+    }
+}
+
+std::uint8_t buzzerPatternCode(
+    BuzzerPattern pattern)
+{
+    switch (pattern)
+    {
+        case BuzzerPattern::Off:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    BuzzerPattern::Off;
+
+        case BuzzerPattern::SlowBeep:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    BuzzerPattern::SlowBeep;
+
+        case BuzzerPattern::FastBeep:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    BuzzerPattern::FastBeep;
+
+        case BuzzerPattern::Fault:
+        default:
+            return
+                CanProtocol::ThermalActuatorStatus::
+                    BuzzerPattern::Fault;
+    }
+}
+
 }
 
 Application::Application()
@@ -268,6 +378,9 @@ void Application::initialize()
         currentTimeMs;
 
     watchdogLastRefreshTimeMs_ =
+        currentTimeMs;
+
+    canTransmitLastTimeMs_ =
         currentTimeMs;
 
     if (watchdog_.refresh())
@@ -493,8 +606,132 @@ void Application::run()
 
     updateBuzzerPatternTiming();
 
+    if (ThermalActuatorStatusTransmitEnabled &&
+        ((currentTimeMs -
+          canTransmitLastTimeMs_) >=
+         CanTransmitPeriodMs))
+    {
+        const bool transmitted =
+            transmitThermalActuatorStatusFrame();
+
+        static_cast<void>(
+            transmitted);
+
+        canTransmitLastTimeMs_ =
+            currentTimeMs;
+    }
+
     updateWatchdog(
         currentTimeMs);
+}
+
+bool Application::
+    transmitThermalActuatorStatusFrame()
+{
+    if (!canBus_.initialized())
+    {
+        return false;
+    }
+
+    const CanFrame frame =
+        buildThermalActuatorStatusFrame();
+
+    return canBus_.send(
+        frame);
+}
+
+CanFrame
+Application::
+    buildThermalActuatorStatusFrame() const
+{
+    CanFrame frame{};
+
+    frame.id =
+        CanProtocol::MessageId::
+            ThermalActuatorStatus;
+
+    frame.length =
+        CanProtocol::ThermalActuatorStatus::
+            PayloadLength;
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            ProtocolVersionIndex] =
+        CanProtocol::ProtocolVersion;
+
+    std::uint8_t statusFlags = 0U;
+
+    statusFlags |=
+        CanProtocol::ThermalActuatorStatus::
+            ControllerOperationalFlag;
+
+    if (remoteVehicleStatus_.
+            communicationState() ==
+        RemoteCommunicationState::Connected)
+    {
+        statusFlags |=
+            CanProtocol::ThermalActuatorStatus::
+                VehicleDataConnectedFlag;
+    }
+
+    if (actuatorSelfTestActive_)
+    {
+        statusFlags |=
+            CanProtocol::ThermalActuatorStatus::
+                SelfTestActiveFlag;
+    }
+
+    if (thermalControlStateMachine_.state() ==
+        ThermalControlState::Safe)
+    {
+        statusFlags |=
+            CanProtocol::ThermalActuatorStatus::
+                SafeStateFlag;
+    }
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            StatusFlagsIndex] =
+        statusFlags;
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            ThermalStateIndex] =
+        thermalStateCode(
+            thermalControlStateMachine_.
+                state());
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            CoolingDutyPercentIndex] =
+        activeOutputCommand_.
+            coolingDutyPercent;
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            WarningColorIndex] =
+        warningColorCode(
+            activeOutputCommand_.
+                warningColor);
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            BuzzerPatternIndex] =
+        buzzerPatternCode(
+            activeOutputCommand_.
+                buzzerPattern);
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            Reserved0Index] =
+        0U;
+
+    frame.data[
+        CanProtocol::ThermalActuatorStatus::
+            Reserved1Index] =
+        0U;
+
+    return frame;
 }
 
 void Application::processCanReceive()

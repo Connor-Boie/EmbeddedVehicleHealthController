@@ -3,6 +3,8 @@
 #include "CanProtocol.hpp"
 #include "main.h"
 
+#include <cstdio>
+
 extern "C"
 {
 extern I2C_HandleTypeDef hi2c1;
@@ -148,6 +150,14 @@ void Application::initialize()
 
     previousLoggedFaultMask_ = 0U;
 
+    remoteActuatorStatus_.reset();
+
+    previousRemoteActuatorCommunicationState_ =
+        remoteActuatorStatus_.communicationState();
+
+    remoteActuatorCommunicationStateInitialized_ =
+        false;
+
     flashTestRun_ = false;
     flashTestPassed_ = false;
 
@@ -253,6 +263,17 @@ void Application::initialize()
     static_cast<void>(
         canInitialized);
 
+    reportRemoteActuatorCommunicationState(
+        remoteActuatorStatus_.
+            communicationState());
+
+    previousRemoteActuatorCommunicationState_ =
+        remoteActuatorStatus_.
+            communicationState();
+
+    remoteActuatorCommunicationStateInitialized_ =
+        true;
+
     refreshWatchdog();
 }
 
@@ -263,6 +284,14 @@ void Application::run()
 
     processTimerEvents();
     processUartReceive(currentTimeMs);
+
+    if (canBus_.initialized())
+    {
+        processCanReceive();
+    }
+
+    updateRemoteActuatorCommunicationState(
+        currentTimeMs);
 
     if (buttonSampleTimer_.isDue(
         currentTimeMs))
@@ -516,6 +545,180 @@ bool
 Application::watchdogRefreshEnabled() const
 {
     return watchdogRefreshEnabled_;
+}
+
+void Application::processCanReceive()
+{
+    CanFrame frame{};
+
+    while (canBus_.receive(frame))
+    {
+        const std::uint32_t currentTimeMs =
+            HAL_GetTick();
+
+        const bool accepted =
+            remoteActuatorStatus_.processFrame(
+                frame,
+                currentTimeMs);
+
+        static_cast<void>(
+            accepted);
+    }
+}
+
+void Application::
+    updateRemoteActuatorCommunicationState(
+        std::uint32_t currentTimeMs)
+{
+    remoteActuatorStatus_.
+        updateCommunicationState(
+            currentTimeMs);
+
+    const RemoteActuatorCommunicationState
+        currentState =
+            remoteActuatorStatus_.
+                communicationState();
+
+    if ((!remoteActuatorCommunicationStateInitialized_) ||
+        (currentState !=
+         previousRemoteActuatorCommunicationState_))
+    {
+        reportRemoteActuatorCommunicationState(
+            currentState);
+
+        previousRemoteActuatorCommunicationState_ =
+            currentState;
+
+        remoteActuatorCommunicationStateInitialized_ =
+            true;
+    }
+}
+
+void Application::
+    reportRemoteActuatorCommunicationState(
+        RemoteActuatorCommunicationState state)
+{
+    const char* message = nullptr;
+
+    switch (state)
+    {
+        case RemoteActuatorCommunicationState::
+            WaitingForData:
+        {
+            message =
+                "remote_actuator_can_state="
+                "WAITING_FOR_DATA";
+            break;
+        }
+
+        case RemoteActuatorCommunicationState::
+            Connected:
+        {
+            message =
+                "remote_actuator_can_state="
+                "CONNECTED";
+            break;
+        }
+
+        case RemoteActuatorCommunicationState::
+            CommunicationLost:
+        {
+            message =
+                "remote_actuator_can_state="
+                "COMMUNICATION_LOST";
+            break;
+        }
+    }
+
+    if (message == nullptr)
+    {
+        return;
+    }
+
+    const bool sent =
+        telemetry_.sendText(
+            message);
+
+    static_cast<void>(
+        sent);
+}
+
+void Application::
+    reportRemoteActuatorStatus()
+{
+    char message[320]{};
+
+    const int length =
+        std::snprintf(
+            message,
+            sizeof(message),
+            "remote_actuator_rx_count=%lu "
+            "remote_actuator_valid=%u "
+            "remote_actuator_connected=%u "
+            "controller_operational=%u "
+            "vehicle_data_connected=%u "
+            "self_test_active=%u "
+            "safe_state=%u "
+            "thermal_state_code=%u "
+            "fan_duty_pct=%u "
+            "warning_color_code=%u "
+            "buzzer_pattern_code=%u",
+            static_cast<unsigned long>(
+                remoteActuatorStatus_.
+                    validFrameCount()),
+            remoteActuatorStatus_.
+                    hasReceivedValidFrame()
+                ? 1U
+                : 0U,
+            remoteActuatorStatus_.
+                    communicationState() ==
+                    RemoteActuatorCommunicationState::
+                        Connected
+                ? 1U
+                : 0U,
+            remoteActuatorStatus_.
+                    controllerOperational()
+                ? 1U
+                : 0U,
+            remoteActuatorStatus_.
+                    vehicleDataConnected()
+                ? 1U
+                : 0U,
+            remoteActuatorStatus_.
+                    selfTestActive()
+                ? 1U
+                : 0U,
+            remoteActuatorStatus_.
+                    safeState()
+                ? 1U
+                : 0U,
+            static_cast<unsigned int>(
+                remoteActuatorStatus_.
+                    thermalStateCode()),
+            static_cast<unsigned int>(
+                remoteActuatorStatus_.
+                    coolingDutyPercent()),
+            static_cast<unsigned int>(
+                remoteActuatorStatus_.
+                    warningColorCode()),
+            static_cast<unsigned int>(
+                remoteActuatorStatus_.
+                    buzzerPatternCode()));
+
+    if ((length <= 0) ||
+        (length >=
+         static_cast<int>(
+             sizeof(message))))
+    {
+        return;
+    }
+
+    const bool sent =
+        telemetry_.sendText(
+            message);
+
+    static_cast<void>(
+        sent);
 }
 
 void Application::processButton(
@@ -1075,6 +1278,8 @@ void Application::sendTelemetry(
 
     static_cast<void>(
         sent);
+
+    reportRemoteActuatorStatus();
 }
 
 void Application::runFlashSelfTest()

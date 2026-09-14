@@ -24,6 +24,12 @@ public:
 private:
     void processCanReceive();
 
+    [[nodiscard]] bool
+        transmitThermalActuatorStatusFrame();
+
+    [[nodiscard]] CanFrame
+        buildThermalActuatorStatusFrame() const;
+
     void updateRemoteCommunicationState();
 
     void updateThermalControlState();
@@ -117,6 +123,9 @@ private:
 
     std::uint32_t
         watchdogLastRefreshTimeMs_{0U};
+
+    std::uint32_t
+        canTransmitLastTimeMs_{0U};
 
     bool userButtonRawPressed_{false};
     bool userButtonDebouncedPressed_{false};
