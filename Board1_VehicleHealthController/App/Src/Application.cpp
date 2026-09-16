@@ -287,7 +287,8 @@ void Application::run()
 
     if (canBus_.initialized())
     {
-        processCanReceive();
+        processCanReceive(
+            currentTimeMs);
     }
 
     updateRemoteActuatorCommunicationState(
@@ -547,15 +548,13 @@ Application::watchdogRefreshEnabled() const
     return watchdogRefreshEnabled_;
 }
 
-void Application::processCanReceive()
+void Application::processCanReceive(
+    std::uint32_t currentTimeMs)
 {
     CanFrame frame{};
 
     while (canBus_.receive(frame))
     {
-        const std::uint32_t currentTimeMs =
-            HAL_GetTick();
-
         const bool accepted =
             remoteActuatorStatus_.processFrame(
                 frame,
@@ -578,6 +577,15 @@ void Application::
         currentState =
             remoteActuatorStatus_.
                 communicationState();
+
+    const bool remoteActuatorCommunicationLost =
+        currentState ==
+        RemoteActuatorCommunicationState::
+            CommunicationLost;
+
+    faultManager_.setFault(
+        Fault::RemoteActuatorCommunicationLost,
+        remoteActuatorCommunicationLost);
 
     if ((!remoteActuatorCommunicationStateInitialized_) ||
         (currentState !=
@@ -1063,6 +1071,12 @@ void Application::performHealthCheck(
         Fault::Overtemperature,
         temperatureHealthMonitor_
             .overtemperatureFaultActive());
+
+    faultManager_.setFault(
+        Fault::RemoteActuatorCommunicationLost,
+        remoteActuatorStatus_.communicationState() ==
+        RemoteActuatorCommunicationState::
+            CommunicationLost);
 
     const std::uint32_t
         currentActiveFaultMask =

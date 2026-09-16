@@ -123,7 +123,8 @@ public:
         watchdogRefreshEnabled() const;
 
 private:
-    void processCanReceive();
+    void processCanReceive(
+        std::uint32_t currentTimeMs);
 
     void updateRemoteActuatorCommunicationState(
         std::uint32_t currentTimeMs);
@@ -243,4 +244,3 @@ private:
 };
 
 #endif
-

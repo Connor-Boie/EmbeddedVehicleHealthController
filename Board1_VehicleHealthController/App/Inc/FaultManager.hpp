@@ -10,7 +10,8 @@ enum class Fault : std::uint32_t
     TemperatureSensorAUnavailable = 1UL << 2U,
     TemperatureSensorBUnavailable = 1UL << 3U,
     TemperatureDisagreement = 1UL << 4U,
-    Overtemperature = 1UL << 5U
+    Overtemperature = 1UL << 5U,
+    RemoteActuatorCommunicationLost = 1UL << 6U
 };
 
 class FaultManager

@@ -70,7 +70,10 @@ The current hardware is a bench prototype. Two colocated MCP9808 temperature sen
 - Periodic Vehicle Health Status transmission framework
 - Reception and validation of Board 2 Thermal Actuator Status frames
 - Board 2 remote-node communication supervision with `WAITING_FOR_DATA`, `CONNECTED`, and `COMMUNICATION_LOST` states
-- 1500-ms Board 2 status timeout monitoring
+- 2500-ms Board 2 status timeout monitoring
+- Remote-actuator communication-loss fault integration using fault bit `0x00000040`
+- Startup distinction between `WAITING_FOR_DATA` and a true post-connection communication loss
+- Shared application-loop timestamp for CAN reception and timeout evaluation to prevent false timeout transitions
 - UART reporting of Board 2 actuator state, fan duty, warning color, buzzer pattern, and self-test state
 - Manual `CAN TEST` transmit command
 - USART2 telemetry through the ST-LINK virtual COM port
@@ -130,7 +133,7 @@ Board 1 CAN1 internal loopback has been verified successfully. That test demonst
 
 Physical two-node CAN communication is also verified. Both NUCLEO-F446RE boards run CAN1 in normal mode at 500 kbit/s through SN65HVD230 transceivers. Board 1 periodically transmits the shared standard-ID `0x100` Vehicle Health Status frame every 500 ms, and Board 2 receives and decodes the live system-health, temperature-validity, sensor-availability, selected-temperature, and fault-mask fields.
 
-The bus is now bidirectional. Board 2 periodically transmits standard-ID `0x101` Thermal Actuator Status frames every 500 ms. Board 1 validates and stores those frames, tracks Board 2 communication freshness, and reports remote actuator state through UART diagnostics. If valid Board 2 status traffic is absent for more than 1500 ms, Board 1 transitions the remote actuator communication state to `COMMUNICATION_LOST`.
+The bus is now bidirectional. Board 2 periodically transmits standard-ID `0x101` Thermal Actuator Status frames every 500 ms. Board 1 validates and stores those frames, tracks Board 2 communication freshness, and reports remote actuator state through UART diagnostics. If valid Board 2 status traffic is absent for more than 2500 ms, Board 1 transitions the remote actuator communication state to `COMMUNICATION_LOST`.
 
 Verified behavior includes Board 2 transitioning from `SAFE` to `NORMAL` after valid room-temperature data is received, driving the RGB warning LED green, and reducing the cooling command from the safe-state 100% duty to 0%. Loss of valid Board 1 traffic for more than 1500 ms transitions Board 2 to `COMMUNICATION_LOST` and back to the defined `SAFE` actuator policy.
 
@@ -138,13 +141,10 @@ Board 2 also implements automatic CAN recovery. During physical bring-up, a star
 
 ## Planned Features
 
-- Persistent CAN communication and remote-node event history
-- Remote-node fault propagation
-- System-level fault injection and recovery validation
-- Persistent logging of important remote-node communication events
-- Host-side unit tests
-- Automated build and test integration
-- Final portfolio documentation and system diagrams
+- Final project cleanup and removal of temporary development/test hooks where appropriate
+- Final README polish
+- Final system architecture and communication-flow diagrams
+- Concise hardware demo procedure
 
 ## Hardware
 
@@ -475,12 +475,12 @@ current buzzer-pattern command
 
 Board 1 continuously polls its CAN receive FIFO and passes `0x101` frames to `RemoteActuatorStatus`. Valid frames update the stored remote state and record the latest valid receive time.
 
-Board 1 uses a 1500-ms freshness timeout:
+Board 1 uses a 2500-ms freshness timeout:
 
 ```text
 No valid Board 2 frame yet  -> WAITING_FOR_DATA
 Valid Board 2 frame         -> CONNECTED
-No valid frame for >1500 ms -> COMMUNICATION_LOST
+No valid frame for >2500 ms -> COMMUNICATION_LOST
 ```
 
 The timeout uses unsigned elapsed-time subtraction so it remains correct across the 32-bit `HAL_GetTick()` rollover.
@@ -1066,6 +1066,8 @@ data0 = fault bits that changed
 data1 = complete active-fault mask afterward
 ```
 
+Because remote actuator communication loss now uses the normal `FaultManager` path, no special flash-record format is required. A Board 2 loss produces a normal `FaultActivated` record with bit `0x00000040` in `data0`; recovery produces a `FaultCleared` record with the same bit. This keeps all system-fault history in one consistent persistent format.
+
 The logger does not automatically erase old history when full.
 
 `LOG ERASE` explicitly erases only the two diagnostic sectors. The final sector at `0x7FF000` remains reserved for `FLASH TEST`.
@@ -1210,9 +1212,14 @@ Bit 2 — 0x00000004 — Temperature Sensor A unavailable
 Bit 3 — 0x00000008 — Temperature Sensor B unavailable
 Bit 4 — 0x00000010 — Temperature sensor disagreement
 Bit 5 — 0x00000020 — Overtemperature
+Bit 6 — 0x00000040 — Remote actuator communication lost
 ```
 
 Both active and latched masks are maintained.
+
+Board 1 promotes a previously connected Board 2 communication timeout into the normal fault-management path. At startup, if Board 2 has never been seen, `RemoteActuatorStatus` remains in `WAITING_FOR_DATA` and fault bit `0x00000040` is not asserted. After at least one valid Board 2 status frame has been received, a later timeout transitions the remote state to `COMMUNICATION_LOST`, which activates bit `0x00000040` and causes `healthy=0`. When valid Board 2 traffic resumes, the active bit clears while the latched mask retains the historical fault until explicitly cleared.
+
+Board 1 uses one `HAL_GetTick()` snapshot for CAN reception and remote-communication timeout evaluation within each application-loop iteration. This prevents unsigned timestamp underflow from producing a false, momentary `COMMUNICATION_LOST` followed immediately by `CONNECTED` while valid 500-ms status traffic is still arriving.
 
 A degraded temperature mode can still provide a valid selected temperature while the corresponding unavailable-sensor fault keeps the overall system health state faulted.
 
@@ -1420,6 +1427,37 @@ HEARTBEAT OFF
 
 commands remain removed because heartbeat operation is automatic.
 
+## System Reliability Validation
+
+The distributed fault path can be validated without adding a special remote-CAN fault-injection command.
+
+### Remote Actuator Communication Loss
+
+Startup without Board 2 attached is treated as `WAITING_FOR_DATA`, not as an immediate system fault. This avoids flagging a missing remote node during normal startup sequencing before it has ever appeared on the CAN bus.
+
+To validate an actual remote-node loss:
+
+1. Start both boards and verify `remote_actuator_connected=1`.
+2. Verify Board 1 reports `active_faults=0x00000000` under otherwise healthy conditions.
+3. Unplug Board 2 after Board 1 has already received valid `0x101` status frames.
+4. After the configured remote-status timeout, Board 1 reports `remote_actuator_can_state=COMMUNICATION_LOST`.
+5. Fault bit `0x00000040` becomes active and `healthy=0`.
+6. The diagnostic logger appends a `FaultActivated` record whose `data0` includes `0x00000040`.
+7. Reconnect Board 2.
+8. Valid `0x101` traffic restores `remote_actuator_connected=1`.
+9. The active `0x00000040` bit clears and `healthy` returns to the state implied by all remaining faults.
+10. The diagnostic logger appends a `FaultCleared` record whose `data0` includes `0x00000040`.
+
+A future refinement could add a startup grace period after which a Board 2 node that never appears at all is also treated as a fault.
+
+### Existing Local Fault Injection
+
+Board 1's existing software fault-injection commands remain useful for validating the same activation, latching, telemetry, and persistent-log path for local faults. The remote actuator communication test complements those software-injected faults by exercising a real distributed-system failure: loss of another physical CAN node.
+
+### Watchdog Recovery
+
+The existing watchdog test validates a different reliability mechanism: if the Board 1 application deliberately stops refreshing the independent watchdog, the MCU resets and the startup diagnostic record preserves the reset cause. This demonstrates that communication supervision, runtime fault management, persistent event history, and watchdog recovery cover different failure classes rather than duplicating one another.
+
 ## Development Tools
 
 - STM32CubeMX
@@ -1445,6 +1483,9 @@ Verified on Board 1 hardware:
 - persistent diagnostic logging across reset
 - CAN1 internal loopback
 - UART command and telemetry handling
+- Board 1 remote actuator communication supervision
+- remote actuator communication loss integrated into the system fault mask
+- persistent logging of remote actuator fault activation and recovery
 
 Verified in the current two-project software structure:
 
@@ -1509,15 +1550,13 @@ CRITICAL  -> RED
 SAFE      -> MAGENTA
 ```
 
-The passive-buzzer warning-pattern policy, non-blocking envelope sequencer, and TIM4 audio-frequency PWM driver are implemented. Physical audible validation is the current hardware test step.
+The passive-buzzer warning-pattern policy, non-blocking envelope sequencer, and TIM4 audio-frequency PWM driver are implemented and physically validated. The buzzer participates in the normal thermal-warning policy and the non-blocking Board 2 actuator self-test.
 
 Board 2 supervises the freshness of the shared `0x100` status frame. It tracks whether it is waiting for its first valid frame, connected to Board 1, or has exceeded the 1500-ms communication timeout after previously receiving valid traffic.
 
 Loss of valid remote communication causes Board 2 to enter `SAFE`, command 100% cooling, select the magenta warning indication, and use the fault buzzer pattern.
 
-Board 2 also services CAN recovery continuously. If the HAL CAN peripheral is not in the listening state, the transport performs a bounded reinitialization attempt every 500 ms until communication can resume.
-
-Future distributed-system work includes Board 2 transmitting its own health and actuator status back to Board 1, Board 1 supervising the remote node, and persistent logging of important remote-node events.
+Board 1 also supervises Board 2 through the shared `0x101` Thermal Actuator Status frame. A Board 2 node that has never been seen remains in `WAITING_FOR_DATA` and does not immediately raise a remote-node fault. After Board 2 has previously connected, exceeding the 2500-ms status timeout transitions the state to `COMMUNICATION_LOST` and immediately raises remote-actuator fault bit `0x00000040`. The normal persistent diagnostic logger records both activation and recovery of this fault, while the latched fault mask preserves the historical event until explicitly cleared.
 
 ## Verified Physical CAN Behavior
 
@@ -1539,6 +1578,12 @@ The physical two-node CAN link has been validated with the following observed be
 - Communication loss produces `COMMUNICATION_LOST` and `SAFE`
 - `SAFE` commands magenta warning and 100% cooling
 - Board 2 automatically recovers from the observed CAN startup/HAL error condition without requiring a manual reset
+- Board 2 periodically transmits `0x101` Thermal Actuator Status back to Board 1
+- Board 1 receives and decodes Board 2 actuator status and tracks freshness
+- Unplugging Board 2 causes Board 1 to transition to `COMMUNICATION_LOST`
+- Remote actuator communication loss is represented by Board 1 fault bit `0x00000040`
+- Board 1 does not assert the remote-node fault while still in the initial `WAITING_FOR_DATA` state before Board 2 has ever connected
+- Reconnecting Board 2 restores `CONNECTED` state and clears the active remote communication fault
 ```
 
 ## Design Principles
@@ -1597,6 +1642,8 @@ The physical two-node CAN link has been validated with the following observed be
 - Use conservative full-cooling behavior when required remote data is unavailable
 - Treat software duty-cycle targets as unvalidated until the physical fan is characterized
 - Use explicit communication states instead of treating missing data as valid data
+- Distinguish initial `WAITING_FOR_DATA` from loss of a node that was previously connected
+- Use one consistent application-loop time snapshot when receiving CAN data and evaluating communication freshness
 - Use wraparound-safe elapsed-time comparisons for communication supervision
 - Enter a defined safe state when required remote data is stale or invalid
 - Validate software transport paths independently from physical CAN hardware
