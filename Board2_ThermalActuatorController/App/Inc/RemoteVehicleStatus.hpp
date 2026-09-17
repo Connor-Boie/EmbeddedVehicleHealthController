@@ -16,7 +16,7 @@ class RemoteVehicleStatus
 {
 public:
     static constexpr std::uint32_t
-        CommunicationTimeoutMs = 1500U;
+        CommunicationTimeoutMs = 2500U;
 
     RemoteVehicleStatus() = default;
 
